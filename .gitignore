@@ -1,0 +1,31 @@
+node_modules/
+dist/
+build/
+coverage/
+*.tsbuildinfo
+
+.env
+.env.local
+.env.*.local
+
+# 上传文件与派生图存储，绝不入库
+/data/
+server/tmp/
+
+# 本机 SQLite 开发库（synchronize 自动生成，不是数据源）
+*.db
+*.db-wal
+*.db-shm
+*.db-journal
+
+# 一次性验收产物：headless Edge 的临时 profile 与截图、日志不入库，脚本 output/*.mjs 保留
+output/edge-profile*/
+output/*.png
+
+*.log
+npm-debug.log*
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/*
+!.vscode/extensions.json
