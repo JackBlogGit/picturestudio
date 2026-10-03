@@ -1,15 +1,28 @@
 /**
- * 加密空间的接口层（PRD 5.7 / D26）。
+ * 加密空间的接口层（PRD 5.7 / D26，容器落盘名见 D29）。
  *
  * 这一层不碰密码学：派生密钥与加解密都在页面里做（utils/crypto.ts），
  * 这里只负责把密文与元数据送出去。字节走不走 JSON 是传输细节，因此分支收在这一层——
  * 页面代码无论对着 mock 还是对着真后端都长一个样，和 upload.ts 的 putChunk 同一套写法。
+ *
+ * 关联：上游只有 `views/VaultView.vue`；下游是 `api/mock/vault.ts`（`VITE_USE_MOCK=true`）
+ * 与未来的 server 端 `VaultModule`（PRD 10.7 那十个接口）；响应类型全部取自 `types/api.ts`，
+ * base64 往返用 `utils/crypto.ts` 的同一对函数，不让两边各自实现一份编码。
+ *
+ * 注意：① 这一层**永不经手口令**——body 里只有盐、轮数、校验子与密文，任何「把口令传上去」的字段都是设计违规；
+ * ② `vaultRekey` 必须把整空间密文**一次**提交，拆成逐条替换会留下「新参数 + 旧密文」的永久不可解条目；
+ * ③ mock 与真接口只在 `vaultPutFile` / `vaultGetCipher` 两处分支，其余调用两边同形，新增接口时保持这一约束；
+ * ④ **进度是传输层的事**，所以 `vaultGetCipher` 的回调放在这里而不是页面里：mock 的解码本身要跑主线程，
+ * 分片解码边跑边报；真接口按 `Content-Length` 报字节数。两条路都给的是「已到手字节 / 总体积」，口径一致。
  */
 import { api, API_BASE, USE_MOCK } from './client';
 import { ApiError } from './error';
 import { getAccessToken } from './token';
 import type { VaultFileView, VaultSpaceRow, VaultStatus } from '@/types/api';
 import { b64ToBytes, bytesToB64 } from '@/utils/crypto';
+
+/** 已到手字节 / 总体积；总体积未知时为 0，调用方只能显示「已取回 n 字节」 */
+export type ByteProgress = (loaded: number, total: number) => void;
 
 /** 未解锁时只给密文与体积；owner 只在超管查他人空间时带 */
 export const vaultStatus = (owner?: number) =>
@@ -72,12 +85,12 @@ export async function vaultPutFile(input: VaultPutInput, cipher: Uint8Array): Pr
 }
 
 /** 取回密文；他人空间的条目在接口层就被拒（PRD 5.7 不给超管离线爆破的素材） */
-export async function vaultGetCipher(row: VaultFileView): Promise<Uint8Array> {
+export async function vaultGetCipher(row: VaultFileView, onProgress?: ByteProgress): Promise<Uint8Array> {
   if (USE_MOCK) {
     const ack = await api.get<{ cipher: string }>(`/vault/files/${row.id}/cipher`);
-    return b64ToBytes(ack.cipher);
+    return decodeBase64(ack.cipher, onProgress);
   }
-  return getRaw(row.links.cipher ?? '');
+  return getRaw(row.links.cipher ?? '', onProgress);
 }
 
 export const vaultDeleteFile = (id: number) => api.delete<{ id: number; purged: true }>(`/vault/files/${id}`);
@@ -94,8 +107,61 @@ async function putRaw(url: string, bytes: Uint8Array): Promise<void> {
   if (!res.ok) throw new ApiError(res.status, 'CIPHER_UPLOAD_FAILED', `密文提交失败（${res.status}）`);
 }
 
-async function getRaw(url: string): Promise<Uint8Array> {
+function concatBytes(parts: Uint8Array[], total: number): Uint8Array {
+  const out = new Uint8Array(total);
+  let offset = 0;
+  for (const part of parts) {
+    out.set(part, offset);
+    offset += part.length;
+  }
+  return out;
+}
+
+/** 让出一个宏任务：进度条要的是「浏览器有机会画一帧」，不是等真的空闲 */
+function yieldToUi(): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, 0));
+}
+
+/**
+ * mock 路径的 base64 → 字节。整串一次解码在几十 MB 的容器上会把主线程占住一整段，
+ * 页面上一帧进度都画不出来，因此按片解、每片之间让出一次事件循环。
+ * 片长必须取 4 的倍数：base64 每 4 字符恰好还原 3 字节，错开一位整串就废了。
+ */
+async function decodeBase64(text: string, onProgress?: ByteProgress): Promise<Uint8Array> {
+  const CHUNK = 65_536;
+  if (!onProgress || text.length <= CHUNK) {
+    const out = b64ToBytes(text);
+    onProgress?.(out.length, out.length);
+    return out;
+  }
+  const total = Math.floor(text.length / 4) * 3;
+  const parts: Uint8Array[] = [];
+  let loaded = 0;
+  for (let i = 0; i < text.length; i += CHUNK) {
+    const part = b64ToBytes(text.slice(i, i + CHUNK));
+    parts.push(part);
+    loaded += part.length;
+    onProgress(loaded, total);
+    await yieldToUi();
+  }
+  return concatBytes(parts, loaded);
+}
+
+async function getRaw(url: string, onProgress?: ByteProgress): Promise<Uint8Array> {
   const res = await fetch(`${API_BASE}${url}`, { headers: { Authorization: `Bearer ${getAccessToken()}` } });
   if (!res.ok) throw new ApiError(res.status, 'CIPHER_DOWNLOAD_FAILED', `密文取回失败（${res.status}）`);
-  return new Uint8Array(await res.arrayBuffer());
+  if (!onProgress || !res.body) return new Uint8Array(await res.arrayBuffer());
+  const declared = Number(res.headers.get('content-length')) || 0;
+  const reader = res.body.getReader();
+  const parts: Uint8Array[] = [];
+  let loaded = 0;
+  for (;;) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    if (!value) continue;
+    parts.push(value);
+    loaded += value.length;
+    onProgress(loaded, declared);
+  }
+  return concatBytes(parts, loaded);
 }

@@ -4,7 +4,10 @@
  * 帐户ID 由服务端发（GET /temp-tasks/next-code），「换一个」只是重新抽一个还没占用的号；
  * 它同时是规则 3 里挂在隐藏「拍展」子树下的目录名，所以创立成功后，右侧暂存的文件直接落到那个目录，
  * 而不是先挑目的地——注册页不该关心目的地，是目录跟着账号长出来。
- * 权限开关画里没有，一律由服务端按默认值给；时长上限也随取号一起下发（D9：L1/L2 只有 7 天，且禁传文件与改标签）。
+ * 权限开关画里没有，一律由服务端按默认值给（D27 起只剩预览／下载／改标签三位，上传不再授予给临时账号）；
+ * 时长上限也随取号一起下发（D9：L1/L2 只有 7 天，且不给改标签）。
+ * 名称（PRD 6.2 的 display_name）画里同样没有，但它是账号对外署名的字段——不填的话对方登录后满屏看到的就是一串帐户ID。
+ * 登录密码支持「随机生成」（D35）：明文只在这一页生成、由创建者复制转交，服务端收到的仍是一条普通 password。
  */
 import { computed, onMounted, reactive, ref } from 'vue';
 import { useRouter } from 'vue-router';
@@ -14,6 +17,7 @@ import { nextAccountCode, registerTemp } from '@/api/temp';
 import { uploadFileMeta } from '@/api/drive';
 import type { TempTaskRow } from '@/types/api';
 import { formatBytes, formatDate } from '@/utils/format';
+import { generateTempPassword } from '@/utils/random-password';
 import { useSessionStore } from '@/stores/session';
 
 interface Attachment {
@@ -31,6 +35,7 @@ const router = useRouter();
 
 const form = reactive({
   code: '',
+  displayName: '',
   password: '',
   confirm: '',
   shootContent: '',
@@ -47,7 +52,12 @@ const fileInput = ref<HTMLInputElement | null>(null);
 
 const mismatch = computed(() => !!form.confirm && form.confirm !== form.password);
 const canSubmit = computed(
-  () => !!form.code && form.password.length >= 6 && form.confirm === form.password && !creating.value,
+  () =>
+    !!form.code &&
+    !!form.displayName.trim() &&
+    form.password.length >= 6 &&
+    form.confirm === form.password &&
+    !creating.value,
 );
 
 async function rollCode(): Promise<void> {
@@ -59,6 +69,14 @@ async function rollCode(): Promise<void> {
   } catch (err) {
     ElMessage.error(errorText(err, '取号失败'));
   }
+}
+
+/** 随机口令由创建者生成后转交，所以两个框一起填满——确认框防手滑的口径不为随机串破例 */
+function rollPassword(): void {
+  const pwd = generateTempPassword();
+  form.password = pwd;
+  form.confirm = pwd;
+  ElMessage.success(`已随机生成 ${pwd.length} 位登录密码，点「复制帐号信息」就能连同帐户ID 交给对方`);
 }
 
 function pickFiles(): void {
@@ -85,6 +103,7 @@ async function copyInfo(): Promise<void> {
     ? [
         `皮克社工作室 · 返图账号`,
         `帐户ID：${created.value.code}`,
+        `名称：${created.value.displayName}`,
         `登录密码：${form.password}`,
         `有效期：至 ${formatDate(created.value.expiresAt)}（剩 ${created.value.daysLeft} 天）`,
         `取图目录：拍展／${created.value.taskFolderName}`,
@@ -93,6 +112,7 @@ async function copyInfo(): Promise<void> {
     : [
         `皮克社工作室 · 返图账号`,
         `帐户ID：${form.code}`,
+        `名称：${form.displayName.trim() || '（还没填）'}`,
         `登录密码：${form.password}`,
         `帐号时长：${form.days} 天`,
         `登录入口：${location.origin}/login`,
@@ -107,13 +127,20 @@ async function copyInfo(): Promise<void> {
 
 async function create(): Promise<void> {
   if (!canSubmit.value) {
-    ElMessage.warning(form.password.length < 6 ? '登录密码至少 6 位' : '两次输入的密码要一致');
+    ElMessage.warning(
+      !form.displayName.trim()
+        ? '先填名称（一般是 coser 名），登录与署名都展示它'
+        : form.password.length < 6
+          ? '登录密码至少 6 位'
+          : '两次输入的密码要一致',
+    );
     return;
   }
   creating.value = true;
   try {
     const row = await registerTemp({
       code: form.code,
+      displayName: form.displayName.trim(),
       password: form.password,
       shootContent: form.shootContent.trim(),
       recycling: form.recycling.trim(),
@@ -180,8 +207,16 @@ onMounted(rollCode);
         </div>
 
         <div class="pk-reg__field">
+          <label>名称（必填）</label>
+          <el-input v-model="form.displayName" maxlength="30" placeholder="一般填 coser 名，登录与署名都展示它" />
+        </div>
+
+        <div class="pk-reg__field">
           <label>登录密码（必填）</label>
-          <el-input v-model="form.password" type="password" show-password placeholder="至少 6 位" />
+          <div class="pk-reg__row">
+            <el-input v-model="form.password" type="password" show-password placeholder="至少 6 位" />
+            <el-button @click="rollPassword">随机生成</el-button>
+          </div>
         </div>
 
         <div class="pk-reg__field">
@@ -247,7 +282,7 @@ onMounted(rollCode);
         <p v-else class="pk-muted pk-reg__empty">还没有选文件</p>
 
         <div v-if="created" class="pk-reg__done">
-          <strong>{{ created.code }}</strong>
+          <strong>{{ created.displayName }} · {{ created.code }}</strong>
           <p>目录：拍展／{{ created.taskFolderName }}（id {{ created.taskFolderId }}）</p>
           <p>有效期：至 {{ formatDate(created.expiresAt) }}</p>
           <p v-if="createdAttachments.failed.length" class="pk-reg__err">

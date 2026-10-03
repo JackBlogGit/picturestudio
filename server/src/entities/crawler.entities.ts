@@ -46,7 +46,7 @@ export enum CrawlerLinkSource {
 }
 
 /**
- * 站外来源登记表（PRD D23）。只存 URL 与从页面上读到的少量文本元数据，
+ * 站外来源登记表（PRD 10.8 / D28）。只存 URL 与从页面上读到的少量文本元数据，
  * 不落地任何抓取到的文件字节——原图与派生图仍只走 files/images 那两条通道。
  */
 @Entity('crawler_links')

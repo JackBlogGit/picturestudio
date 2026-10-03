@@ -25,7 +25,7 @@ const temp: Actor = {
   ownerUid: 100,
   expired: false,
   disabled: false,
-  flags: { preview: true, download: true, uploadImg: true, uploadFile: false, editTag: true },
+  flags: { preview: true, download: true, editTag: true },
   quotaBytes: 0,
   usedBytes: 0,
   albumIds: [1],

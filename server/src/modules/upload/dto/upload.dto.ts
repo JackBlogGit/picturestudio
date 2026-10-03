@@ -1,5 +1,6 @@
 import { Transform, Type } from 'class-transformer';
 import {
+  IsIn,
   IsInt,
   IsOptional,
   IsString,
@@ -9,6 +10,7 @@ import {
   Min,
   MinLength,
 } from 'class-validator';
+import { AlbumStage } from '../../../entities';
 
 const trim = ({ value }: { value: unknown }): unknown =>
   typeof value === 'string' ? value.trim() : value;
@@ -43,6 +45,19 @@ export class CreateUploadDto {
   @Transform(trim)
   @Matches(MD5_HEX, { message: 'md5Client 必须是 32 位十六进制' })
   md5Client?: string;
+
+  /** 交付给哪位临时账号（D27：拍展传图一律由成员发起并点名，缺失/非法由服务层回业务码） */
+  @IsOptional()
+  @Type(() => Number)
+  @IsInt({ message: 'tempId 必须是整数' })
+  @Min(1)
+  tempId?: number;
+
+  /** 本批图片的阶段（D31）；不给 = 未标，落库后由所属相册的阶段兜住 */
+  @IsOptional()
+  @Transform(trim)
+  @IsIn(['pre', 'post'], { message: 'stage 只能是 pre 或 post' })
+  stage?: AlbumStage;
 }
 
 export class CompleteUploadDto {
@@ -75,6 +90,18 @@ export class DirectUploadDto {
   @Transform(trim)
   @Matches(MD5_HEX, { message: 'md5Client 必须是 32 位十六进制' })
   md5Client?: string;
+
+  /** 与分片路径同一口径：点名交付给哪位临时账号 */
+  @IsOptional()
+  @Type(() => Number)
+  @IsInt({ message: 'tempId 必须是整数' })
+  @Min(1)
+  tempId?: number;
+
+  @IsOptional()
+  @Transform(trim)
+  @IsIn(['pre', 'post'], { message: 'stage 只能是 pre 或 post' })
+  stage?: AlbumStage;
 
   @IsOptional()
   @Transform(toBool)

@@ -24,8 +24,12 @@ function filterIds(link: MockShareLink): number[] {
   const ids: number[] = [];
   if (link.coserTagId) ids.push(link.coserTagId);
   if (link.filterJson) {
-    const parsed = JSON.parse(link.filterJson) as Record<string, number[]>;
-    for (const group of Object.values(parsed)) ids.push(...group);
+    try {
+      const parsed = JSON.parse(link.filterJson) as Record<string, number[]>;
+      for (const group of Object.values(parsed)) ids.push(...group);
+    } catch {
+      // 筛选条件写坏时退化为「无附加筛选」，不能让一整页打不开
+    }
   }
   return [...new Set(ids)];
 }

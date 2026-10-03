@@ -52,7 +52,7 @@ function temp(partial: Partial<Extract<Actor, { kind: ActorKind.Temp }>> = {}): 
     ownerUid: 100,
     expired: false,
     disabled: false,
-    flags: { preview: true, download: true, uploadImg: true, uploadFile: false, editTag: true },
+    flags: { preview: true, download: true, editTag: true },
     quotaBytes: 0,
     usedBytes: 0,
     albumIds: [1],
@@ -449,16 +449,13 @@ describe('create：会话建立前的闸门', () => {
     expect([err.getStatus(), err.code]).toEqual([404, 'NOT_IN_WHITELIST']);
   });
 
-  it('临时账号：未开通图片上传开关时 403', async () => {
+  it('临时账号：上传按身份硬拦，三项开关全开也 403（D27）', async () => {
     const h = build();
     const err = await errorOf(
-      h.service.create(
-        createDto(),
-        temp({ flags: { preview: true, download: true, uploadImg: false, uploadFile: false, editTag: true } }),
-        CTX,
-      ),
+      h.service.create(createDto(), temp({ flags: { preview: true, download: true, editTag: true } }), CTX),
     );
-    expect([err.getStatus(), err.code]).toEqual([403, 'TEMP_SWITCH_OFF']);
+    expect([err.getStatus(), err.code]).toEqual([403, 'TEMP_UPLOAD_FORBIDDEN']);
+    expect(h.savedSessions).toHaveLength(0);
   });
 
   it('锁定相册禁止上传：409', async () => {
@@ -674,14 +671,13 @@ describe('complete：合并 → 校验 → 查重 → 落库', () => {
     expect(h.accountUpdates).toEqual([{ usedSpace: String(1000 + WHOLE.length) }]);
   });
 
-  it('配额算在临时账号自己头上，资源归属工作室（PRD 6.2）', async () => {
+  it('临时账号即便已有会话也完不成上传：落库前按身份硬拦，配额不动（D27）', async () => {
     const h = build({ session: sessionRow({ userType: 'temp', uid: null, tempId: 7 }) });
     h.storage.seedChunks();
-    const view = await h.service.complete(UPLOAD_ID, {}, temp(), CTX);
-    expect(h.getRepository).toHaveBeenCalledWith(TempAccount);
-    expect(h.imageDrafts[0]).toMatchObject({ uploadUid: 100, uploadTempId: 7 });
-    expect(view.links.original).toBeNull();
-    expect(h.accountUpdates).toEqual([{ usedSpace: String(1000 + WHOLE.length) }]);
+    const err = await errorOf(h.service.complete(UPLOAD_ID, {}, temp(), CTX));
+    expect([err.getStatus(), err.code]).toEqual([403, 'TEMP_UPLOAD_FORBIDDEN']);
+    expect(h.accountUpdates).toEqual([]);
+    expect(h.imageDrafts).toHaveLength(0);
   });
 
   it('落库前配额刚好被用满：原图回滚删除，不留孤儿文件', async () => {

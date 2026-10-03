@@ -21,10 +21,11 @@ export class SuggestTagDto {
   @IsEnum(TagType, { message: '标签类型不合法' })
   type?: TagType;
 
+  @IsOptional()
   @Transform(trim)
   @IsString()
   @MaxLength(100)
-  q: string;
+  q?: string;
 }
 
 export class ListTagDto {

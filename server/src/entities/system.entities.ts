@@ -10,7 +10,7 @@ import {
   UpdateDateColumn,
 } from 'typeorm';
 import { User } from './account.entities';
-import { Album } from './photo.entities';
+import { Album, AlbumStage } from './photo.entities';
 
 @Entity('site_settings')
 export class SiteSetting {
@@ -37,7 +37,7 @@ export enum UploadResourceType {
 
 @Entity('upload_sessions')
 @Index('uk_upload_id', ['uploadId'], { unique: true })
-@Index('idx_expire', ['status', 'expireTime'])
+@Index('idx_session_expire', ['status', 'expireTime'])
 export class UploadSession {
   @PrimaryGeneratedColumn()
   id: number;
@@ -56,6 +56,10 @@ export class UploadSession {
 
   @Column({ length: 255 })
   filename: string;
+
+  /** D31：本批图片的阶段，NULL = 上传时没选，落库时回落到 albums.stage */
+  @Column({ type: 'simple-enum', enum: AlbumStage, nullable: true })
+  stage: AlbumStage | null;
 
   @Column({ type: 'bigint' })
   fileSize: string;

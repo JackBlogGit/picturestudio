@@ -2,6 +2,7 @@
 /**
  * 返图链接管理（PRD 8.2 第 6 页 / 4.4）。L3+ 看全站、L2 只看本人创建；
  * 新建入口在相册详情页，因为只有那里能选到本册的标签与 coser。
+ * D34：撤销属于后台改动，提交前要先过身份再验证；前台成员自己撤自己的链接不受这一层约束。
  */
 import { computed, onMounted, ref } from 'vue';
 import { ElMessage, ElMessageBox } from 'element-plus';
@@ -9,6 +10,7 @@ import { listShareLinks, revokeShareLink } from '@/api/share';
 import { errorText } from '@/api/client';
 import type { ShareLinkView } from '@/types/api';
 import { formatDate } from '@/utils/format';
+import { askReauth, endReauth } from '@/utils/reauth';
 import { useSessionStore } from '@/stores/session';
 
 const session = useSessionStore();
@@ -56,6 +58,7 @@ async function revoke(link: ShareLinkView): Promise<void> {
     { type: 'warning', confirmButtonText: '确定撤销', cancelButtonText: '取消' },
   ).catch(() => false);
   if (!confirmed) return;
+  if (!(await askReauth(`撤销「${link.coserName ?? link.albumName}」的返图链接`))) return;
   busy.value = true;
   try {
     await revokeShareLink(link.id);
@@ -65,6 +68,7 @@ async function revoke(link: ShareLinkView): Promise<void> {
     ElMessage.error(errorText(err));
   } finally {
     busy.value = false;
+    endReauth();
   }
 }
 
@@ -77,7 +81,8 @@ onMounted(load);
       <div>
         <h2 class="pk-page-title">返图链接</h2>
         <p class="pk-muted">
-          管理员可看全站链接，撤销走同一套 404 口径以免被枚举 token。当前身份 {{ session.displayName }}。
+          管理员可看全站链接，撤销走同一套 404 口径以免被枚举 token。当前身份 {{ session.displayName }}；
+          撤销是后台改动，点「撤销」后要先填一次当前账号的登录口令（PRD 6.1 / D34）。
         </p>
       </div>
       <el-button size="small" @click="load">刷新</el-button>
@@ -171,7 +176,7 @@ onMounted(load);
       <el-table-column label="操作" width="188" align="right">
         <template #default="{ row }">
           <el-button size="small" text type="primary" @click="copy(row)">复制</el-button>
-          <el-link class="pk-admin__open" type="primary" :underline="false" :href="row.url" target="_blank">
+          <el-link class="pk-admin__open" type="primary" underline="never" :href="row.url" target="_blank" rel="noopener noreferrer">
             打开
           </el-link>
           <el-button

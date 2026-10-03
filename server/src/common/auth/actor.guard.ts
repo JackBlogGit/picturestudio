@@ -7,6 +7,7 @@ import { Request } from 'express';
 import { InjectRepository } from '@nestjs/typeorm';
 import { Repository } from 'typeorm';
 import { AuditService, RequestContext } from '../../modules/audit/audit.service';
+import { tempGrantIds } from '../permission/temp-grants';
 import { LogTargetType, TempAccount, User } from '../../entities';
 import { AppError } from '../http/app-error';
 import { UserLevel } from '../enums/user-level.enum';
@@ -73,10 +74,7 @@ export class ActorGuard implements CanActivate {
     }
 
     const tempId = Number(payload.sub.slice(3));
-    const temp = await this.temps.findOne({
-      where: { id: tempId },
-      relations: { albumGrants: true, folderGrants: true },
-    });
+    const temp = await this.temps.findOne({ where: { id: tempId } });
     if (!temp) {
       throw new AppError(401, 'TEMP_NOT_FOUND', '临时账号不存在');
     }
@@ -90,6 +88,7 @@ export class ActorGuard implements CanActivate {
       throw new AppError(401, 'TEMP_EXPIRED', '临时账号已到期或已被销毁');
     }
 
+    const grants = await tempGrantIds(this.temps.manager, temp.id);
     const actor: TempActor = {
       kind: ActorKind.Temp,
       tempId: temp.id,
@@ -99,23 +98,27 @@ export class ActorGuard implements CanActivate {
       flags: {
         preview: temp.allowPreview === 1,
         download: temp.allowDownload === 1,
-        uploadImg: temp.allowUploadImg === 1,
-        uploadFile: temp.allowUploadFile === 1,
         editTag: temp.allowEditTag === 1,
       },
       quotaBytes: Number(temp.spaceQuota),
       usedBytes: Number(temp.usedSpace),
-      albumIds: (temp.albumGrants ?? []).map((g) => g.albumId),
-      folderIds: (temp.folderGrants ?? []).map((g) => g.folderId),
+      albumIds: grants.albumIds,
+      folderIds: grants.folderIds,
     };
     return { actor, payload };
   }
 
+  /**
+   * 图片/缩略图由 <img src> 直接加载，浏览器不会带 Authorization 头，所以 GET 额外认 ?t=。
+   * 只放开 GET 且只认这一个参数名——写操作仍然只能走 Bearer，令牌不会进浏览器历史以外的通道。
+   */
   private extractToken(req: Request): string | null {
     const header = req.headers.authorization;
     if (header?.startsWith('Bearer ')) {
       return header.slice(7).trim() || null;
     }
-    return null;
+    if (req.method !== 'GET') return null;
+    const raw = (req.query as Record<string, unknown> | undefined)?.t;
+    return typeof raw === 'string' && raw ? raw : null;
   }
 }

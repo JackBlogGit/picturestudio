@@ -20,6 +20,8 @@ export interface MockUser {
   usedSpace: number;
   /** users.status：1 正常 0 禁用 */
   disabled?: boolean;
+  /** 演示层口令：缺省沿用写死的 demo1234，PUT /auth/password 改写的是这一列 */
+  password?: string;
   lastLogin?: string | null;
   /** 规则 13：超管单独开给这个人的文件权限档，缺省 = 四档全关，只看等级门槛 */
   driveGrant?: DriveGrant;
@@ -68,7 +70,7 @@ export function driveGrantOf(uid: number): DriveGrant {
   return USERS.find((u) => u.uid === uid)?.driveGrant ?? NO_DRIVE_GRANT;
 }
 
-const ALL_FLAGS: TempFlags = { preview: true, download: true, uploadImg: true, uploadFile: false, editTag: true };
+const ALL_FLAGS: TempFlags = { preview: true, download: true, editTag: true };
 
 /**
  * 临时账号走 /auth/temp-token，密码就是注册页填的那一列（演示库明文存）。
@@ -86,7 +88,7 @@ export const TEMPS: MockTemp[] = [
     shootContent: 'CP29 雷电将军场照 + 棚拍返图',
     recycling: '精修完把 PSD 源文件传回同一个目录',
     // 下载关着，用来验证临时账号看不到原图按钮（PRD 7.3）
-    flags: { ...ALL_FLAGS, download: false, uploadFile: false },
+    flags: { ...ALL_FLAGS, download: false },
     albumIds: [1, 2],
     folderIds: [7],
     taskFolderId: 7,
@@ -388,6 +390,8 @@ export interface ImageSeed {
   /** 上传演示带真实字节数；预置行没有它，由 megapixels 推算体积 */
   bytes?: number;
   visibility: ImageView['visibility'];
+  /** 上传时选定的前后期（D31）；缺省/null = 没标过，读取时回落到所属相册的阶段 */
+  stage?: AlbumStage | null;
   uploaderUid: number;
   uploaderTempId: number | null;
   tags: number[];
@@ -404,15 +408,15 @@ const SEEDS: ImageSeed[] = [
   { id: 106, albumId: 1, filename: 'DSC04255.jpg', width: 7008, height: 4672, megapixels: 38.9, visibility: 'private', uploaderUid: 3, uploaderTempId: null, tags: [1, 6, 10, 12], shotTime: '2026-09-26T08:33:00.000Z', sort: 6 },
   { id: 107, albumId: 1, filename: 'DSC04302.jpg', width: 7008, height: 4672, megapixels: 41.0, visibility: 'public', uploaderUid: 4, uploaderTempId: null, tags: [1, 6, 10, 12, 13], shotTime: '2026-09-26T09:01:00.000Z', sort: 7 },
   { id: 108, albumId: 1, filename: 'DSC04310.jpg', width: 7008, height: 4672, megapixels: 39.4, visibility: 'member', uploaderUid: 1, uploaderTempId: null, tags: [1, 4, 8, 11, 14], shotTime: '2026-09-26T09:18:00.000Z', sort: 8 },
-  { id: 109, albumId: 1, filename: 'IMG_0031.jpg', width: 3024, height: 4032, megapixels: 12.2, visibility: 'public', uploaderUid: 3, uploaderTempId: 301, tags: [1, 4, 7, 15], shotTime: null, sort: 9 },
-  { id: 110, albumId: 1, filename: 'IMG_0032.jpg', width: 3024, height: 4032, megapixels: 12.2, visibility: 'public', uploaderUid: 3, uploaderTempId: 301, tags: [1, 4, 7, 13], shotTime: null, sort: 10 },
+  { id: 109, albumId: 1, filename: 'IMG_0031.jpg', width: 3024, height: 4032, megapixels: 12.2, visibility: 'public', stage: 'pre', uploaderUid: 3, uploaderTempId: 301, tags: [1, 4, 7, 15], shotTime: null, sort: 9 },
+  { id: 110, albumId: 1, filename: 'IMG_0032.jpg', width: 3024, height: 4032, megapixels: 12.2, visibility: 'public', stage: 'pre', uploaderUid: 3, uploaderTempId: 301, tags: [1, 4, 7, 13], shotTime: null, sort: 10 },
 
   { id: 201, albumId: 2, filename: 'DSC01120.jpg', width: 6720, height: 4480, megapixels: 30.1, visibility: 'member', uploaderUid: 3, uploaderTempId: null, tags: [2, 5, 8, 12, 14], shotTime: '2026-08-15T05:40:00.000Z', sort: 1 },
   { id: 202, albumId: 2, filename: 'DSC01144.jpg', width: 6720, height: 4480, megapixels: 29.7, visibility: 'public', uploaderUid: 3, uploaderTempId: null, tags: [2, 5, 8, 12, 15], shotTime: '2026-08-15T06:02:00.000Z', sort: 2 },
   { id: 203, albumId: 2, filename: 'DSC01189.jpg', width: 6720, height: 4480, megapixels: 31.4, visibility: 'member', uploaderUid: 2, uploaderTempId: null, tags: [2, 6, 9, 11], shotTime: '2026-08-15T06:25:00.000Z', sort: 3 },
   { id: 204, albumId: 2, filename: 'DSC01203.jpg', width: 6720, height: 4480, megapixels: 28.8, visibility: 'admin', uploaderUid: 2, uploaderTempId: null, tags: [2, 6, 9, 11, 13], shotTime: '2026-08-15T06:47:00.000Z', sort: 4 },
-  { id: 205, albumId: 2, filename: 'IMG_7712.jpg', width: 4000, height: 6000, megapixels: 24.0, visibility: 'member', uploaderUid: 3, uploaderTempId: 301, tags: [2, 5, 8, 14], shotTime: null, sort: 5 },
-  { id: 206, albumId: 2, filename: 'IMG_7719.jpg', width: 4000, height: 6000, megapixels: 24.0, visibility: 'public', uploaderUid: 3, uploaderTempId: 301, tags: [2, 5, 8, 13], shotTime: null, sort: 6 },
+  { id: 205, albumId: 2, filename: 'IMG_7712.jpg', width: 4000, height: 6000, megapixels: 24.0, visibility: 'member', stage: 'pre', uploaderUid: 3, uploaderTempId: 301, tags: [2, 5, 8, 14], shotTime: null, sort: 5 },
+  { id: 206, albumId: 2, filename: 'IMG_7719.jpg', width: 4000, height: 6000, megapixels: 24.0, visibility: 'public', stage: 'pre', uploaderUid: 3, uploaderTempId: 301, tags: [2, 5, 8, 13], shotTime: null, sort: 6 },
 
   { id: 301, albumId: 3, filename: 'DSC05001.jpg', width: 7008, height: 4672, megapixels: 40.2, visibility: 'admin', uploaderUid: 2, uploaderTempId: null, tags: [1, 4, 7, 11, 13], shotTime: '2026-09-27T03:10:00.000Z', sort: 1 },
   { id: 302, albumId: 3, filename: 'DSC05002.jpg', width: 7008, height: 4672, megapixels: 39.8, visibility: 'admin', uploaderUid: 2, uploaderTempId: null, tags: [1, 4, 7, 11, 13], shotTime: '2026-09-27T03:22:00.000Z', sort: 2 },
@@ -444,7 +448,14 @@ export function sortSeeds(rows: ImageSeed[]): ImageSeed[] {
 }
 
 /** 上传演示：合并完成后往内存表里追加一行，id 从当前最大值继续排 */
-export function addImage(albumId: number, filename: string, size: number, uploaderUid: number, uploaderTempId: number | null): ImageSeed {
+export function addImage(
+  albumId: number,
+  filename: string,
+  size: number,
+  uploaderUid: number,
+  uploaderTempId: number | null,
+  stage: AlbumStage | null,
+): ImageSeed {
   const id = Math.max(...IMAGES.map((i) => i.id)) + 1;
   const album = albumById(albumId);
   const seed: ImageSeed = {
@@ -457,6 +468,8 @@ export function addImage(albumId: number, filename: string, size: number, upload
     bytes: size,
     // 新图档位继承相册，绝不上浮（PRD 3.2）
     visibility: album?.visibility ?? 'member',
+    // D31：传图时选定的前后期；没选过（null）才回落到相册阶段
+    stage,
     uploaderUid,
     uploaderTempId,
     tags: [],

@@ -46,7 +46,10 @@ export const ALBUM_STATUS_LABEL: Record<AlbumStatus, string> = {
   [AlbumStatus.Locked]: '已锁定',
 };
 
-/** 相册所属阶段：前期 = 拍展/原片，后期 = 精修/交付 */
+/**
+ * 阶段词汇：前期 = 拍展/原片初修，后期 = 精修/交付。
+ * D31 起相册与单张返图共用这一套（`albums.stage` 与 `images.img_stage`），不再另立第二个枚举。
+ */
 export type AlbumStage = 'pre' | 'post';
 
 export const STAGE_LABEL: Record<AlbumStage, string> = {
@@ -164,6 +167,11 @@ export interface ImageView {
   watermarked: 0 | 1;
   visibility: Visibility;
   sort: number;
+  /**
+   * 这张图的阶段（D31）：**已解析**的最终值——上传时选过就以图自己那列为准，
+   * 没标过的历史图回落到所属相册的阶段。取图页的前期/后期两段按它分流。
+   */
+  stage: AlbumStage;
   /** 游客与分享访客拿到的是 null：响应体不下发上传账号（PRD 12.8） */
   uploadUid: number | null;
   uploadTempId: number | null;
@@ -276,11 +284,13 @@ export const CAP_MODE_LABEL: Record<CapMode, string> = {
  */
 export type FeatureGrant = Partial<Record<CapKey, CapMode>>;
 
+/**
+ * 临时账号的权限开关（PRD 6.2）。
+ * D27 起「传图」「传文件」两开关作废：上传能力由身份决定——临时账号只能取图，不再有写档。
+ */
 export interface TempFlags {
   preview: boolean;
   download: boolean;
-  uploadImg: boolean;
-  uploadFile: boolean;
   editTag: boolean;
 }
 
@@ -762,6 +772,8 @@ export interface TempTaskRow {
 export interface TempRegisterPayload {
   /** 帐户ID：大写字母、数字与短横线，4~24 位，全局唯一 */
   code: string;
+  /** 显示名（PRD 6.2 的 `display_name`）：对外署名用的称呼，一般填 coser 名，≤30 字 */
+  displayName: string;
   password: string;
   shootContent?: string;
   recycling?: string;
@@ -813,4 +825,119 @@ export interface AlbumRowView extends AlbumView, AlbumCapsView {
   imagesCount: number;
   createName: string;
   createLevel: number;
+}
+
+// ---------------- 站外来源登记（PRD 10.8 / D28） ----------------
+
+/**
+ * 平台归类只按注册域猜，认不出来一律归 other——前端不据它做拦截，
+ * 只用来在登记表上做筛选与聚合。字段值与服务端 CrawlerPlatform 枚举逐字对齐。
+ */
+export const CrawlerPlatform = {
+  Weibo: 'weibo',
+  Bilibili: 'bilibili',
+  Xiaohongshu: 'xiaohongshu',
+  Douyin: 'douyin',
+  Twitter: 'twitter',
+  Other: 'other',
+} as const;
+
+export type CrawlerPlatform = (typeof CrawlerPlatform)[keyof typeof CrawlerPlatform];
+
+export const CRAWLER_PLATFORMS: CrawlerPlatform[] = ['weibo', 'bilibili', 'xiaohongshu', 'douyin', 'twitter', 'other'];
+
+export const CRAWLER_PLATFORM_LABEL: Record<CrawlerPlatform, string> = {
+  weibo: '微博',
+  bilibili: 'B 站',
+  xiaohongshu: '小红书',
+  douyin: '抖音',
+  twitter: 'X',
+  other: '其他站点',
+};
+
+/** 后续处置状态：登记表上唯一可改的字段，数值与 crawler_links.status 一致 */
+export const CrawlerLinkStatus = {
+  Pending: 0,
+  Noted: 1,
+  Contacted: 2,
+  Reported: 3,
+  Ignored: 4,
+} as const;
+
+export type CrawlerLinkStatus = (typeof CrawlerLinkStatus)[keyof typeof CrawlerLinkStatus];
+
+export const CRAWLER_STATUSES: CrawlerLinkStatus[] = [0, 1, 2, 3, 4];
+
+export const CRAWLER_STATUS_LABEL: Record<CrawlerLinkStatus, string> = {
+  0: '待确认',
+  1: '已确认转载',
+  2: '已取得授权',
+  3: '已投诉',
+  4: '无关',
+};
+
+/** 表格里的状态徽标配色：只有「已投诉」与「无关」算处置完毕，其余都还需要人跟进 */
+export const CRAWLER_STATUS_TONE: Record<CrawlerLinkStatus, 'ghost' | 'warn'> = {
+  0: 'warn',
+  1: 'warn',
+  2: 'ghost',
+  3: 'warn',
+  4: 'ghost',
+};
+
+/** 来源只影响列表怎么读这一条：检索来的带关键词，手敲的是超管自己贴的 */
+export const CrawlerLinkSource = {
+  Search: 'search',
+  Manual: 'manual',
+} as const;
+
+export type CrawlerLinkSource = (typeof CrawlerLinkSource)[keyof typeof CrawlerLinkSource];
+
+/** 一条已登记的站外来源。url 是规范化后的值，与库里去重键同源 */
+export interface CrawlerLinkView {
+  id: number;
+  url: string;
+  title: string;
+  snippet: string;
+  domain: string;
+  platform: CrawlerPlatform;
+  keyword: string;
+  source: CrawlerLinkSource;
+  status: CrawlerLinkStatus;
+  note: string;
+  createUid: number | null;
+  auditUid: number | null;
+  auditTime: string | null;
+  createTime: string;
+}
+
+/** 检索命中项：registered / linkId 让结果行直接标出「这条已经登记过了」 */
+export interface CrawlerSearchHitView {
+  url: string;
+  title: string;
+  snippet: string;
+  domain: string;
+  platform: CrawlerPlatform;
+  registered: boolean;
+  linkId: number | null;
+}
+
+export interface CrawlerSearchResult {
+  keyword: string;
+  limit: number;
+  /** 采集到的原始条数 */
+  fetched: number;
+  /** 被 SSRF 闸门丢掉、或因非法地址无法登记的条数 */
+  dropped: number;
+  hits: CrawlerSearchHitView[];
+}
+
+export interface CrawlerProbeResult {
+  url: string;
+  domain: string;
+  platform: CrawlerPlatform;
+  title: string;
+  description: string;
+  registered: boolean;
+  linkId: number | null;
 }

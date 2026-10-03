@@ -9,6 +9,7 @@ import { requireMember } from '../../common/permission/actor-guards';
 import { Actor, ActorKind, MemberActor } from '../../common/permission/types';
 import { uniqueAccountNo } from '../../common/temp-account/account-no';
 import { maskPhone } from '../../common/temp-account/phone-mask';
+import { LIKE_ESCAPE_SQL, likePrefixPattern } from '../../common/sql/like';
 import {
   Album,
   File,
@@ -92,9 +93,9 @@ function isDuplicateKey(err: unknown): boolean {
   return e?.code === 'ER_DUP_ENTRY' || Number(e?.errno) === 1062;
 }
 
-/** L1/L2 只允许开这两项（D9）：预览 + 传图 */
+/** L1/L2 只允许开预览（D9；D27 起上传开关已作废，低等级可授予的就只剩这一位） */
 function grantableForLowLevel(field: TempFlagField): boolean {
-  return field === 'allowPreview' || field === 'allowUploadImg';
+  return field === 'allowPreview';
 }
 
 /**
@@ -118,7 +119,7 @@ export function applyCreateLimits(
       if (value === 1) overridden.push(field);
       continue;
     }
-    /** 未传时：L1/L2 默认开预览与传图，L3/L4 默认全关 */
+    /** 未传时：L1/L2 默认开预览，L3/L4 默认全关 */
     flags[field] = value === undefined ? (downscope ? 1 : 0) : value;
   }
 
@@ -267,10 +268,9 @@ export class TempAccountService {
 
     const kw = query.q?.trim();
     if (kw) {
-      const escaped = `${kw.replace(/[\\%_]/g, (c) => `\\${c}`)}%`;
       qb.andWhere(
-        "(t.accountNo LIKE :kw ESCAPE '\\\\' OR t.loginName LIKE :kw ESCAPE '\\\\' OR t.displayName LIKE :kw ESCAPE '\\\\')",
-        { kw: escaped },
+        `(t.accountNo LIKE :kw ${LIKE_ESCAPE_SQL} OR t.loginName LIKE :kw ${LIKE_ESCAPE_SQL} OR t.displayName LIKE :kw ${LIKE_ESCAPE_SQL})`,
+        { kw: likePrefixPattern(kw) },
       );
     }
 
@@ -409,8 +409,6 @@ export class TempAccountService {
       flags: {
         allowPreview: row.allowPreview,
         allowDownload: row.allowDownload,
-        allowUploadImg: row.allowUploadImg,
-        allowUploadFile: row.allowUploadFile,
         allowEditTag: row.allowEditTag,
       },
       hasLink: Boolean(row.accessToken),

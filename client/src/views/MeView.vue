@@ -29,7 +29,6 @@ const CAPABILITY_ROWS = [
 const FLAG_ROWS = [
   { key: 'preview', label: '预览' },
   { key: 'download', label: '下载' },
-  { key: 'uploadImg', label: '传图' },
   { key: 'editTag', label: '打标签' },
 ] as const;
 

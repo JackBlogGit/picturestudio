@@ -12,6 +12,24 @@ import {
 import { Visibility } from '../common/enums/visibility.enum';
 import { User } from './account.entities';
 
+/** 目录用途：网盘 12 条规则的判定全部挂在这一列（PRD 5.4） */
+export enum FolderKind {
+  /** 「工作室」：规则 2，需文件权限1 */
+  Workspace = 'workspace',
+  /** 「拍展」：规则 3，列表不显示，每个临时账号一个帐户ID 子目录 */
+  Shoot = 'shoot',
+  /** 「管理」：规则 4，需文件权限2 */
+  Manage = 'manage',
+  /** 个人共享文件夹：规则 1/5 需文件权限3 */
+  Shared = 'shared',
+  /** 私人文件夹：规则 6 由文件权限4 决定 */
+  Personal = 'personal',
+  /** 「爬虫」：规则 11，挂在超管私人文件夹下 */
+  Crawler = 'crawler',
+  /** 「垃圾箱」：规则 12，只有超管能读改 */
+  Trash = 'trash',
+}
+
 @Entity('folders')
 @Index('idx_path', ['path'])
 @Index('idx_folder_parent', ['parentId'])
@@ -40,6 +58,20 @@ export class Folder {
 
   @Column({ length: 500, default: '' })
   description: string;
+
+  @Column({ type: 'simple-enum', enum: FolderKind, default: FolderKind.Workspace })
+  kind: FolderKind;
+
+  /** 规则 1/6：共享／私人／拍展／爬虫目录的归属人，公共目录为 NULL */
+  @Column({ type: 'int', nullable: true })
+  ownerUid: number | null;
+
+  /** 规则 12：被移进垃圾箱时的原上级目录，还原时移回这里 */
+  @Column({ type: 'int', nullable: true })
+  deletedFromId: number | null;
+
+  @Column({ type: 'datetime', nullable: true })
+  deletedAt: Date | null;
 
   @Column({ type: 'simple-enum', enum: Visibility, default: Visibility.Member })
   visibility: Visibility;
@@ -114,6 +146,13 @@ export class File {
 
   @Column({ type: 'varchar', length: 8, nullable: true })
   refStage: string | null;
+
+  /** 规则 12：进垃圾箱前的原目录，还原时移回这里 */
+  @Column({ type: 'int', nullable: true })
+  deletedFromId: number | null;
+
+  @Column({ type: 'datetime', nullable: true })
+  deletedAt: Date | null;
 
   @CreateDateColumn({ type: 'datetime' })
   createTime: Date;

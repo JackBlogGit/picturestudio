@@ -14,8 +14,8 @@ import type { MockTemp } from './db';
 import type { Actor } from './policy';
 import { fail, int, isTrue, requireMember, requireLevel, str } from './shared';
 
-/** 游客一律不给传文件（网盘上传），只有看图、传图、打标签的权限由开关控制 */
-const REGISTER_FLAGS = { preview: true, download: true, uploadImg: true, uploadFile: false, editTag: false };
+/** D27：上传（拍展传图 / 传文件）不再是可授予的开关——临时账号只能取图，登记出来只有看图与下载 */
+const REGISTER_FLAGS = { preview: true, download: true, editTag: false };
 
 /** 剩余天数按向上取整给「还剩几天」的观感；到期与否直接比时刻——最后一天取整会得到 -0，用 < 0 判不出来 */
 function remaining(expiresAt: string): { daysLeft: number; expired: boolean } {
@@ -61,6 +61,8 @@ function taskRow(temp: MockTemp): TempTaskRow {
 
 /** L1/L2 只看自己登记的，L3 起才管得着别人的任务 */
 function scopedTemps(actor: Actor, scope: string | undefined): MockTemp[] {
+  // 17.4：临时账号只读自己那张工单，与 server 的 task.service.scoped() 同一把尺子
+  if (actor.kind === 'temp') return TEMPS.filter((t) => t.tempId === actor.tempId);
   const member = requireMember(actor);
   if (scope === 'all' && member.level >= UserLevel.Admin) return [...TEMPS];
   return TEMPS.filter((t) => t.ownerUid === member.uid);
@@ -88,24 +90,25 @@ export function registerTemp(body: Record<string, unknown>, actor: Actor): TempT
     fail(400, 'INVALID_ACCOUNT_CODE', '帐户ID 只能是大写字母、数字与短横线，4~24 位');
   }
   if (TEMPS.some((t) => t.code === code)) fail(409, 'TEMP_CODE_TAKEN', '这个帐户ID 已被占用，点「换一个」再试');
+  const displayName = str(body.displayName)?.trim() ?? '';
+  if (!displayName) fail(400, 'VALIDATION_FAILED', '显示名不能为空');
+  if (displayName.length > 30) fail(400, 'VALIDATION_FAILED', '显示名最多 30 字');
   const password = str(body.password) ?? '';
   if (password.length < 6) fail(400, 'WEAK_PASSWORD', '登录密码至少 6 位');
 
-  // PRD 6.2：L1/L2 创建的账号强制降权——时长 ≤7 天、禁 uploadFile/editTag、配额取默认值；
-  // download 保持开启：取图功能的核心就是让临时账户下载属于自己的返图
+  // PRD 6.2：L1/L2 创建的账号强制降权——时长 ≤7 天、打标签不给、配额取默认值；
+  // download 保持开启：取图功能的核心就是让临时账户下载属于自己的返图。
+  // D27 起两边开关相同（上传位不再按人授予），降权只剩时长与配额这一条轴。
   const isTrainee = member.level < UserLevel.Admin; // L1 或 L2
   const DEFAULT_QUOTA = 1_073_741_824; // 1GB，站点 temp.default_quota 的默认值
 
   const days = Math.min(maxDaysFor(member.level), Math.max(1, int(body.days, 14)));
-  const flags: typeof REGISTER_FLAGS = isTrainee
-    ? { preview: true, download: true, uploadImg: true, uploadFile: false, editTag: false }
-    : { ...REGISTER_FLAGS };
+  const flags: typeof REGISTER_FLAGS = { ...REGISTER_FLAGS };
   const spaceQuota = isTrainee ? DEFAULT_QUOTA : Number(body.spaceQuota ?? DEFAULT_QUOTA);
 
   const temp = addTemp({
     code,
-    // 画里没有「显示名」这一栏，对外就报帐户ID
-    displayName: code,
+    displayName,
     password,
     ownerUid: member.uid,
     days,

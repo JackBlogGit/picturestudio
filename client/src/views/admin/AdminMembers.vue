@@ -4,6 +4,7 @@
  * L3 只能碰 L1/L2、看不到 L4 的存在，超管转让要带 confirmTransfer 二次确认（12.4）。
  * 「网盘授权」是超管独占的个人授权（规则 13）：单独给某一个人开文件权限1~4 的某一档，
  * 只绕过他这一档的等级门槛，站点门槛本身不动。
+ * D34：这一页的每一项改动（含行内的重置口令、续期、注销）提交前都要再验证一次当前账号口令。
  */
 import { computed, onMounted, reactive, ref } from 'vue';
 import { ElMessage, ElMessageBox } from 'element-plus';
@@ -28,6 +29,7 @@ import { errorText, isApiError } from '@/api/client';
 import type { AdminTempRow, AdminUserRow, CapKey, CapMode, DriveGrant, FeatureGrant, FolderNode, TempFlags, UserLevel } from '@/types/api';
 import { CAP_DESC, CAP_KEYS, CAP_LABEL, CAP_MODE_LABEL, DRIVE_GRANT_LABEL, LEVEL_LABEL, RESERVED_CAPS, UserLevel as Level } from '@/types/api';
 import { formatBytes, formatDate } from '@/utils/format';
+import { askReauth, endReauth } from '@/utils/reauth';
 import { useSessionStore } from '@/stores/session';
 
 const session = useSessionStore();
@@ -59,16 +61,24 @@ const userForm = reactive({
   confirmPassword: '',
 });
 
+/** 成员弹窗打开那一刻的值，「重置」回到这里（口令框不参与） */
+const userBase = ref<Pick<typeof userForm, 'username' | 'nickname' | 'position' | 'level' | 'quotaGb' | 'disabled'>>({
+  username: '',
+  nickname: '',
+  position: '',
+  level: 1,
+  quotaGb: 1,
+  disabled: false,
+});
+
 const FLAG_LABEL: Record<keyof TempFlags, string> = {
   preview: '预览',
   download: '下载',
-  uploadImg: '传图',
-  uploadFile: '传文件',
   editTag: '改标签',
 };
 
-/** 游客不再支持传文件（网盘上传），开关组过滤掉 uploadFile */
-const EDITABLE_FLAG_KEYS: (keyof TempFlags)[] = ['preview', 'download', 'uploadImg', 'editTag'];
+/** D27：传图与传文件两开关已作废——临时账号只能取图，写档能力由身份决定，不再是按授予 */
+const EDITABLE_FLAG_KEYS: (keyof TempFlags)[] = ['preview', 'download', 'editTag'];
 
 const tempForm = reactive({
   open: false,
@@ -77,7 +87,7 @@ const tempForm = reactive({
   displayName: '',
   days: 14,
   quotaGb: 1,
-  flags: { preview: true, download: true, uploadImg: false, uploadFile: false, editTag: false } as TempFlags,
+  flags: { preview: true, download: true, editTag: false } as TempFlags,
   albumIds: [] as number[],
   folderIds: [] as number[],
   /** D22：仅 L4 可改的登录凭据 */
@@ -85,6 +95,17 @@ const tempForm = reactive({
   password: '',
   confirmPassword: '',
   originCode: '',
+});
+
+/** 临时账号弹窗打开那一刻的值，「重置」回到这里（口令框不参与） */
+const tempBase = ref({
+  displayName: '',
+  days: 14,
+  quotaGb: 1,
+  flags: { preview: true, download: true, editTag: false } as TempFlags,
+  albumIds: [] as number[],
+  folderIds: [] as number[],
+  code: '',
 });
 
 /** L4 才允许出现 4 这一档，否则前端会给出后端必拒的选项 */
@@ -171,7 +192,21 @@ function fillUser(row?: AdminUserRow): void {
     userForm.quotaGb = 1;
     userForm.disabled = false;
   }
+  userBase.value = {
+    username: userForm.username,
+    nickname: userForm.nickname,
+    position: userForm.position,
+    level: userForm.level,
+    quotaGb: userForm.quotaGb,
+    disabled: userForm.disabled,
+  };
   userForm.open = true;
+}
+
+function resetUser(): void {
+  Object.assign(userForm, userBase.value);
+  userForm.password = '';
+  userForm.confirmPassword = '';
 }
 
 /** 口令只在提交时校验：建号必填，编辑时留空即不改；确认口令防手滑 */
@@ -192,6 +227,7 @@ async function submitUser(): Promise<void> {
     return;
   }
   const spaceQuota = Math.round(userForm.quotaGb * GB);
+  if (!(await askReauth(`${userForm.mode === 'create' ? '新建' : '编辑'}成员「${userForm.nickname || userForm.username}」`))) return;
   busy.value = true;
   try {
     if (userForm.mode === 'create') {
@@ -224,6 +260,7 @@ async function submitUser(): Promise<void> {
     ElMessage.error(errorText(err));
   } finally {
     busy.value = false;
+    endReauth();
   }
 }
 
@@ -248,6 +285,7 @@ async function patchUserWithTransfer(uid: number, body: Parameters<typeof update
 }
 
 async function quickDisable(row: AdminUserRow): Promise<void> {
+  if (!(await askReauth(`${row.disabled ? '启用' : '禁用'}「${row.nickname}」`))) return;
   busy.value = true;
   try {
     await updateUser(row.uid, { disabled: !row.disabled });
@@ -256,6 +294,7 @@ async function quickDisable(row: AdminUserRow): Promise<void> {
     ElMessage.error(errorText(err));
   } finally {
     busy.value = false;
+    endReauth();
   }
 }
 
@@ -266,6 +305,7 @@ async function doResetPassword(row: AdminUserRow): Promise<void> {
     { inputType: 'password', inputValue: '', confirmButtonText: '重置', cancelButtonText: '取消' },
   ).catch(() => null);
   if (!input) return;
+  if (!(await askReauth(`重置「${row.nickname}」的登录口令`))) return;
   busy.value = true;
   try {
     await resetPassword(row.uid, input.value);
@@ -274,6 +314,7 @@ async function doResetPassword(row: AdminUserRow): Promise<void> {
     ElMessage.error(errorText(err));
   } finally {
     busy.value = false;
+    endReauth();
   }
 }
 
@@ -284,6 +325,7 @@ async function doDeleteUser(row: AdminUserRow): Promise<void> {
     { type: 'warning', confirmButtonText: '确定删除', cancelButtonText: '取消' },
   ).catch(() => false);
   if (!confirmed) return;
+  if (!(await askReauth(`删除账号「${row.nickname}」`))) return;
   busy.value = true;
   try {
     await deleteUser(row.uid);
@@ -293,6 +335,7 @@ async function doDeleteUser(row: AdminUserRow): Promise<void> {
     ElMessage.error(errorText(err));
   } finally {
     busy.value = false;
+    endReauth();
   }
 }
 
@@ -311,6 +354,13 @@ const grantForm = reactive({
   level: 1 as UserLevel,
   grant: { perm1: false, perm2: false, perm3: false, perm4: false } as DriveGrant,
 });
+
+/** 授权弹窗打开那一刻的四档开关，「重置」回到这里 */
+const grantBase = ref<DriveGrant>({ perm1: false, perm2: false, perm3: false, perm4: false });
+
+function resetGrant(): void {
+  grantForm.grant = { ...grantBase.value };
+}
 
 /** 门槛值只是提示文案，第一次打开弹窗时拉一次站点设置就够了 */
 const gateMap = ref<Record<string, string>>({});
@@ -338,6 +388,7 @@ async function fillGrant(row: AdminUserRow): Promise<void> {
   grantForm.nickname = row.nickname;
   grantForm.level = row.level;
   grantForm.grant = { ...row.driveGrant };
+  grantBase.value = { ...row.driveGrant };
   grantForm.open = true;
   if (Object.keys(gateMap.value).length) return;
   try {
@@ -348,6 +399,7 @@ async function fillGrant(row: AdminUserRow): Promise<void> {
 }
 
 async function submitGrant(): Promise<void> {
+  if (!(await askReauth(`保存「${grantForm.nickname}」的文件权限授权`))) return;
   busy.value = true;
   try {
     await updateUserDriveGrants(grantForm.uid, grantForm.grant);
@@ -358,6 +410,7 @@ async function submitGrant(): Promise<void> {
     ElMessage.error(errorText(err));
   } finally {
     busy.value = false;
+    endReauth();
   }
 }
 
@@ -383,15 +436,24 @@ const featureForm = reactive({
   modes: grantToModes(undefined),
 });
 
+/** 功能位弹窗打开那一刻的 11 个模式，「重置」回到这里 */
+const featureBase = ref<Record<CapKey, CapMode>>(grantToModes(undefined));
+
+function resetFeature(): void {
+  featureForm.modes = { ...featureBase.value };
+}
+
 async function fillFeature(row: AdminUserRow): Promise<void> {
   featureForm.uid = row.uid;
   featureForm.nickname = row.nickname;
   featureForm.level = row.level;
   featureForm.modes = grantToModes(row.featureGrant);
+  featureBase.value = { ...featureForm.modes };
   featureForm.open = true;
 }
 
 async function submitFeature(): Promise<void> {
+  if (!(await askReauth(`保存「${featureForm.nickname}」的功能位覆盖`))) return;
   busy.value = true;
   try {
     const body: FeatureGrant = {};
@@ -407,6 +469,7 @@ async function submitFeature(): Promise<void> {
     ElMessage.error(errorText(err));
   } finally {
     busy.value = false;
+    endReauth();
   }
 }
 
@@ -424,8 +487,29 @@ function fillTemp(row?: AdminTempRow): void {
   tempForm.originCode = row?.code ?? '';
   tempForm.password = '';
   tempForm.confirmPassword = '';
+  tempBase.value = {
+    displayName: tempForm.displayName,
+    days: tempForm.days,
+    quotaGb: tempForm.quotaGb,
+    flags: { ...tempForm.flags },
+    albumIds: [...tempForm.albumIds],
+    folderIds: [...tempForm.folderIds],
+    code: tempForm.code,
+  };
   tempForm.open = true;
   void loadPools();
+}
+
+function resetTemp(): void {
+  tempForm.displayName = tempBase.value.displayName;
+  tempForm.days = tempBase.value.days;
+  tempForm.quotaGb = tempBase.value.quotaGb;
+  tempForm.flags = { ...tempBase.value.flags };
+  tempForm.albumIds = [...tempBase.value.albumIds];
+  tempForm.folderIds = [...tempBase.value.folderIds];
+  tempForm.code = tempBase.value.code;
+  tempForm.password = '';
+  tempForm.confirmPassword = '';
 }
 
 function tempPasswordError(): string {
@@ -446,6 +530,7 @@ async function submitTemp(): Promise<void> {
   }
 
   const spaceQuota = Math.round(tempForm.quotaGb * GB);
+  if (!(await askReauth(`${tempForm.mode === 'create' ? '新建' : '编辑'}临时账号「${tempForm.displayName}」`))) return;
   busy.value = true;
   try {
     if (tempForm.mode === 'create') {
@@ -503,10 +588,12 @@ async function submitTemp(): Promise<void> {
     }
   } finally {
     busy.value = false;
+    endReauth();
   }
 }
 
 async function renew(row: AdminTempRow, days: number): Promise<void> {
+  if (!(await askReauth(`${days > 0 ? '续期' : '缩短'}「${row.displayName}」的有效期`))) return;
   busy.value = true;
   try {
     await updateTemp(row.tempId, { addDays: days });
@@ -516,6 +603,7 @@ async function renew(row: AdminTempRow, days: number): Promise<void> {
     ElMessage.error(errorText(err));
   } finally {
     busy.value = false;
+    endReauth();
   }
 }
 
@@ -526,6 +614,7 @@ async function destroy(row: AdminTempRow): Promise<void> {
     { type: 'warning', confirmButtonText: '确定注销', cancelButtonText: '取消' },
   ).catch(() => false);
   if (!confirmed) return;
+  if (!(await askReauth(`注销临时账号「${row.displayName}」`))) return;
   busy.value = true;
   try {
     await destroyTemp(row.tempId);
@@ -535,6 +624,7 @@ async function destroy(row: AdminTempRow): Promise<void> {
     ElMessage.error(errorText(err));
   } finally {
     busy.value = false;
+    endReauth();
   }
 }
 
@@ -549,7 +639,8 @@ onMounted(loadTab);
         <p class="pk-muted">
           编辑页一次开放等级／职务／配额／状态与口令，口令留空即不改；行内「重置口令」是同一接口的快捷入口。
           L3 只能操作 L1／L2 且看不到 L4，删除账号与「网盘授权」仅超管可用——后者单独给某个人开某一档文件权限（规则
-          13），不动站点门槛。临时账号的五个开关与白名单每次请求都重读。
+          13），不动站点门槛。临时账号的五个开关与白名单每次请求都重读。任何改动提交前都要填一次当前账号的登录口令
+          （PRD 6.1 / D34），弹窗里的「重置」只回到打开时的值。
         </p>
       </div>
       <el-button
@@ -793,6 +884,7 @@ onMounted(loadTab);
       </el-form>
       <template #footer>
         <el-button @click="userForm.open = false">取消</el-button>
+        <el-button @click="resetUser">重置</el-button>
         <el-button type="primary" :loading="busy" @click="submitUser">保存</el-button>
       </template>
     </el-dialog>
@@ -817,6 +909,7 @@ onMounted(loadTab);
       </p>
       <template #footer>
         <el-button @click="grantForm.open = false">取消</el-button>
+        <el-button @click="resetGrant">重置</el-button>
         <el-button type="primary" :loading="busy" @click="submitGrant">保存授权</el-button>
       </template>
     </el-dialog>
@@ -852,6 +945,7 @@ onMounted(loadTab);
       </p>
       <template #footer>
         <el-button @click="featureForm.open = false">取消</el-button>
+        <el-button @click="resetFeature">重置</el-button>
         <el-button type="primary" :loading="busy" @click="submitFeature">保存授权</el-button>
       </template>
     </el-dialog>
@@ -931,6 +1025,7 @@ onMounted(loadTab);
       </el-form>
       <template #footer>
         <el-button @click="tempForm.open = false">取消</el-button>
+        <el-button @click="resetTemp">重置</el-button>
         <el-button type="primary" :loading="busy" @click="submitTemp">保存</el-button>
       </template>
     </el-dialog>

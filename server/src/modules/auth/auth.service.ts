@@ -4,7 +4,8 @@ import { Repository } from 'typeorm';
 import * as bcrypt from 'bcrypt';
 import { LogTargetType, TempAccount, User } from '../../entities';
 import { LEVEL_LABEL, UserLevel } from '../../common/enums/user-level.enum';
-import { capabilitiesFor } from '../../common/permission/permission-policy';
+import { capabilitiesFor, overriddenCaps } from '../../common/permission/permission-policy';
+import { tempGrantIds } from '../../common/permission/temp-grants';
 import { AppError } from '../../common/http/app-error';
 import { TokenService } from '../../common/auth/token.service';
 import { Actor, ActorKind } from '../../common/permission/types';
@@ -17,7 +18,7 @@ export interface LoginResult {
     | { kind: 'temp'; tempId: number; displayName: string; expiresAt: Date };
 }
 
-const BCRYPT_COST = 12;
+export const BCRYPT_COST = 12;
 
 @Injectable()
 export class AuthService {
@@ -69,7 +70,7 @@ export class AuthService {
     const temp = await this.temps
       .createQueryBuilder('t')
       .addSelect('t.password')
-      .where('t.access_token = :token', { token: accessToken })
+      .where('t.accessToken = :token', { token: accessToken })
       .getOne();
     if (!temp) {
       await this.denied(ctx, 'temp_link_access_failed', 'unknown_token');
@@ -92,7 +93,7 @@ export class AuthService {
    */
   async tempDestroy(
     actor: Actor,
-    confirmNo: string,
+    accountTail: string,
     jti: string | undefined,
     ctx: RequestContext,
   ): Promise<{ destroyed: true }> {
@@ -107,7 +108,7 @@ export class AuthService {
     if (!temp) throw new AppError(401, 'TEMP_NOT_FOUND', '临时账号不存在');
 
     const tail = temp.accountNo.slice(-6).toUpperCase();
-    if (confirmNo.trim().toUpperCase() !== tail) {
+    if (accountTail.trim().toUpperCase() !== tail) {
       await this.audit.record(actor, ctx, {
         action: 'temp_self_destroy',
         targetType: LogTargetType.Temp,
@@ -171,36 +172,41 @@ export class AuthService {
     if (actor.kind === ActorKind.Member) {
       const user = await this.users.findOne({ where: { id: actor.uid } });
       if (!user) throw new AppError(401, 'ACCOUNT_DISABLED', '账号不存在或已被禁用');
+      const grants = user.featureGrants;
       return {
         kind: 'user',
         uid: user.id,
         username: user.username,
         nickname: user.nickname,
+        position: user.position ?? '',
         level: user.level,
         levelName: LEVEL_LABEL[user.level],
         spaceQuota: Number(user.spaceQuota),
         usedSpace: Number(user.usedSpace),
-        capabilities: capabilitiesFor(user.level),
+        capabilities: capabilitiesFor(user.level, grants),
+        capsOverridden: overriddenCaps(user.level, grants),
+        serverTime: new Date().toISOString(),
       };
     }
 
     if (actor.kind === ActorKind.Temp) {
-      const temp = await this.temps.findOne({
-        where: { id: actor.tempId },
-        relations: { albumGrants: true, folderGrants: true },
-      });
+      const temp = await this.temps.findOne({ where: { id: actor.tempId } });
       if (!temp) throw new AppError(401, 'TEMP_NOT_FOUND', '临时账号不存在');
+      const grants = await tempGrantIds(this.temps.manager, temp.id);
       return {
         kind: 'temp',
         tempId: temp.id,
+        // 自助销毁要手输这个码的后 6 位（PRD 8.5 危险格）
+        accountId: temp.accountNo,
         displayName: temp.displayName,
-        expiresAt: temp.expireTime,
+        expiresAt: new Date(temp.expireTime).toISOString(),
         ownerUid: temp.ownerUid,
         flags: actor.flags,
-        allowedAlbumIds: (temp.albumGrants ?? []).map((g) => g.albumId),
-        allowedFolderIds: (temp.folderGrants ?? []).map((g) => g.folderId),
+        allowedAlbumIds: grants.albumIds,
+        allowedFolderIds: grants.folderIds,
         spaceQuota: Number(temp.spaceQuota),
         usedSpace: Number(temp.usedSpace),
+        serverTime: new Date().toISOString(),
       };
     }
 

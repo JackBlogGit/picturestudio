@@ -64,8 +64,9 @@ async function signOut(): Promise<void> {
         <p v-if="workbar" class="pk-welcome">{{ session.welcome }}</p>
         <nav v-else class="pk-nav">
           <router-link v-for="item in navItems" :key="item.to" :to="item.to">{{ item.label }}</router-link>
-          <router-link v-if="session.caps.upload && !session.isTemp" to="/drive?tab=upload">传文件</router-link>
-          <router-link v-if="session.caps.upload && !session.isTemp" to="/albums?tab=upload">拍展传图</router-link>
+          <!-- 两个上传入口都只认 caps.upload：D27 起这一位不给临时账号，它只能取图 -->
+          <router-link v-if="session.caps.upload" to="/drive?tab=upload">传文件</router-link>
+          <router-link v-if="session.caps.upload" to="/albums?tab=upload">拍展传图</router-link>
         </nav>
 
         <div class="pk-header__user">

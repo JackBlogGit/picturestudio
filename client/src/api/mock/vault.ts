@@ -12,6 +12,11 @@
  *   ——不给「档位带来的删除权」顺手扩成「离线爆破口令的素材」
  * - 删除即就地销毁，不进垃圾箱：垃圾箱是超管的明文清单，混进一串密文条目只会让人误读
  * - 密文体积计入 used_space（5.6 的「含 private」同样适用）
+ *
+ * 注意：库存在**模块内存**里，整页刷新连演示数据一起重置——这是全站 mock 的既有行为，
+ * 故意**不**给这一个模块单独开持久化（会让「刷新即丢」的口径在别处失真）。演示密文由 `ensureSeeded()`
+ * 异步**真的**跑一遍加密生成（不是塞字符串），所以首次请求略慢；`DEMO_PASS` 只活在 mock 里，
+ * 真后端连「口令」这个概念都不存，关掉 mock 后页面上的演示口令提示也随之消失。
  */
 import type { VaultFileView, VaultSpaceRow, VaultStatus } from '@/types/api';
 import { UserLevel } from '@/types/api';

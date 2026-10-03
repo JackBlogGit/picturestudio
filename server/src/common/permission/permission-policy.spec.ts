@@ -67,8 +67,6 @@ function allFlags(over: Partial<TempFlags> = {}): TempFlags {
   return {
     preview: true,
     download: true,
-    uploadImg: true,
-    uploadFile: true,
     editTag: true,
     ...over,
   };
@@ -341,9 +339,8 @@ describe('PRD 7.3 临时账号', () => {
     );
   });
 
-  it('五项开关各自把关对应操作', () => {
+  it('三项开关各自把关对应操作（D27：上传不再由开关授予）', () => {
     const img = resource();
-    const folder = resource({ type: ResourceType.Folder, albumId: undefined, folderIdChain: [ROOT_FOLDER] });
 
     expectDeny(decide(Action.Preview, temp({ flags: allFlags({ preview: false }) }), img), 403, 'TEMP_SWITCH_OFF');
     expectAllow(decide(Action.Preview, temp(), img));
@@ -351,13 +348,14 @@ describe('PRD 7.3 临时账号', () => {
     expectDeny(decide(Action.DownloadOriginal, temp({ flags: allFlags({ download: false }) }), img), 403, 'TEMP_SWITCH_OFF');
     expectDeny(decide(Action.ZipDownload, temp({ flags: allFlags({ download: false }) }), img), 403, 'TEMP_SWITCH_OFF');
     expectAllow(decide(Action.DownloadOriginal, temp(), img));
+  });
 
-    expectDeny(decide(Action.Upload, temp({ flags: allFlags({ uploadImg: false }) }), img), 403, 'TEMP_SWITCH_OFF');
-    expectAllow(decide(Action.Upload, temp(), img));
+  it('上传按身份硬拦：相册与网盘都不给（D27）', () => {
+    const img = resource();
+    const folder = resource({ type: ResourceType.Folder, albumId: undefined, folderIdChain: [ROOT_FOLDER] });
 
-    // 图片开关不等于文件开关：向文件夹投递只看 allow_upload_file
-    expectDeny(decide(Action.Upload, temp({ flags: allFlags({ uploadFile: false }) }), folder), 403, 'TEMP_SWITCH_OFF');
-    expectAllow(decide(Action.Upload, temp({ flags: allFlags({ uploadFile: true, uploadImg: false }) }), folder));
+    expectDeny(decide(Action.Upload, temp(), img), 403, 'TEMP_UPLOAD_FORBIDDEN');
+    expectDeny(decide(Action.Upload, temp(), folder), 403, 'TEMP_UPLOAD_FORBIDDEN');
   });
 
   it('编辑标签需开关命中且是本人本次上传（7.3 第 3 步）', () => {
@@ -380,13 +378,6 @@ describe('PRD 7.3 临时账号', () => {
     for (const action of [Action.EditMeta, Action.Delete, Action.ChangeVisibility, Action.CreateShareLink] as Action[]) {
       expectDeny(decide(action, fullyOpen, resource({ uploadTempId: 7 })), 403, 'TEMP_FORBIDDEN');
     }
-  });
-
-  it('配额用尽后上传 413，其余操作不受影响；quota=0 表示不限', () => {
-    const full = temp({ quotaBytes: 1000, usedBytes: 1000 });
-    expectDeny(decide(Action.Upload, full, resource()), 413, 'QUOTA_EXCEEDED');
-    expectAllow(decide(Action.Preview, full, resource()));
-    expectAllow(decide(Action.Upload, temp({ quotaBytes: 0, usedBytes: 9999 }), resource()));
   });
 
   it('临时账号访问后台一律被 decideAdmin 拦下', () => {

@@ -26,6 +26,12 @@ export enum AlbumStatus {
   Locked = 3,
 }
 
+/** 阶段词汇：前期 = 拍展/原片初修，后期 = 精修/交付（PRD D31）。albums.stage 与 images.img_stage 共用它 */
+export enum AlbumStage {
+  Pre = 'pre',
+  Post = 'post',
+}
+
 @Entity('albums')
 @Index('idx_visibility_status', ['visibility', 'status'])
 @Index('idx_create_uid', ['createUid'])
@@ -62,6 +68,13 @@ export class Album {
 
   @Column({ type: 'tinyint', default: AlbumStatus.Normal })
   status: AlbumStatus;
+
+  @Column({ type: 'simple-enum', enum: AlbumStage, default: AlbumStage.Pre })
+  stage: AlbumStage;
+
+  /** D25：数组里出现即「关」，NULL / 空数组 = 本册全开；父关子也关的有效集在读取时沿 parent_id 往上并，不落库 */
+  @Column({ type: 'json', nullable: true })
+  albumCaps: string[] | null;
 
   @Column({ type: 'int' })
   createUid: number;
@@ -140,6 +153,10 @@ export class Image {
 
   @Column({ type: 'int', default: 0 })
   sort: number;
+
+  /** D31：NULL = 这张图没单独标过阶段，投影时回落到 albums.stage */
+  @Column({ type: 'simple-enum', enum: AlbumStage, nullable: true })
+  imgStage: AlbumStage | null;
 
   @Column({ type: 'int' })
   uploadUid: number;

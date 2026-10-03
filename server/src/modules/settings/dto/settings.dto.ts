@@ -2,6 +2,7 @@ import { Type } from 'class-transformer';
 import {
   ArrayMinSize,
   IsArray,
+  IsOptional,
   IsString,
   Length,
   ValidateNested,
@@ -16,6 +17,8 @@ export class SettingItemDto {
   @Length(0, 4000)
   value: string;
 
+  /** 前端保存时不传备注，缺省由 setMany 落空串 */
+  @IsOptional()
   @IsString()
   @Length(0, 255)
   remark?: string;

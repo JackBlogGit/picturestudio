@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed } from 'vue';
+import { computed, onBeforeUnmount, onMounted, ref } from 'vue';
 import { useRouter } from 'vue-router';
 import { ElMessage, ElMessageBox } from 'element-plus';
 import { errorText } from '@/api/error';
@@ -10,12 +10,22 @@ import WorkGrid from '@/components/WorkGrid.vue';
 import { useSessionStore } from '@/stores/session';
 
 const session = useSessionStore();
+
+/** serverNow() 是普通函数不是响应式源，不自己打一拍这句提示就永远不出现（与 DestroyCountdown 同一手法） */
+const now = ref(session.serverNow());
+let tick: number | undefined;
+onMounted(() => {
+  tick = window.setInterval(() => {
+    now.value = session.serverNow();
+  }, 1000);
+});
+onBeforeUnmount(() => window.clearInterval(tick));
 const router = useRouter();
 
 const cells = computed(() => cellsFor(session.profile));
 const expiresAt = computed(() => (session.profile?.kind === 'temp' ? session.profile.expiresAt : ''));
 /** 倒计时归零到真实失效之间最长 5 分钟窗口，以接口 401 为准，这里不做兜底放行 */
-const expired = computed(() => !!expiresAt.value && session.serverNow() >= Date.parse(expiresAt.value));
+const expired = computed(() => !!expiresAt.value && now.value >= Date.parse(expiresAt.value));
 
 async function openCell(cell: WorkCell): Promise<void> {
   if (cell.danger) {

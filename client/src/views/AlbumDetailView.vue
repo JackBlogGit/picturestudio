@@ -479,7 +479,7 @@ watch(() => query.page, () => void loadImages());
           ＋ 新建子相册
         </el-button>
         <el-button
-          v-if="session.caps.upload && !session.isTemp && !capClosed('upload')"
+          v-if="session.caps.upload && !capClosed('upload')"
           type="primary"
           @click="$router.push(`/albums?tab=upload&album=${id}`)"
         >
@@ -654,7 +654,7 @@ watch(() => query.page, () => void loadImages());
             </p>
 
             <div v-if="preview.links.original" class="pk-preview__actions">
-              <el-link :href="preview.links.original" target="_blank" type="primary" :underline="false">
+              <el-link :href="preview.links.original" target="_blank" rel="noopener noreferrer" type="primary" underline="never">
                 下载原图（经鉴权接口）
               </el-link>
             </div>
@@ -796,7 +796,7 @@ watch(() => query.page, () => void loadImages());
             创建 {{ formatDate(link.createTime) }} · 到期 {{ formatDate(link.expireTime) }}
             <template v-if="link.lastVisitTime"> · 最近访问 {{ formatDate(link.lastVisitTime) }}</template>
             <template v-if="link.scope === 'person'"> · 来自 {{ link.albumNames.join('、') }}</template>
-            <el-link class="pk-share-item__open" type="primary" :underline="false" :href="link.url" target="_blank">
+            <el-link class="pk-share-item__open" type="primary" underline="never" :href="link.url" target="_blank" rel="noopener noreferrer">
               在新窗口打开
             </el-link>
             <el-button

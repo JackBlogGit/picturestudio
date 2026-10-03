@@ -3,7 +3,7 @@ import { spawn } from 'node:child_process';
 import { AppError } from '../../common/http/app-error';
 
 /**
- * crawl4ai-skill CLI 适配器（PRD D23 的采集通道）。
+ * crawl4ai-skill CLI 适配器（PRD 10.8 / D28 的候选来源通道）。
  * 本模块只做两件事：站外检索取回结果条目、读回单个页面的标题与摘要文本。
  * 不下载文件、不落盘任何抓取内容——采集到的字节只活在进程内存里，解析完即弃。
  */

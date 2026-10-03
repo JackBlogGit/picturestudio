@@ -47,8 +47,6 @@ function temp(tempId = TEMP_ID, ownerUid = SELF): TempActor {
     flags: {
       preview: true,
       download: false,
-      uploadImg: true,
-      uploadFile: false,
       editTag: false,
     },
     quotaBytes: 0,

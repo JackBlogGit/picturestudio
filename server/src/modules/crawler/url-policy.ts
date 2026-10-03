@@ -3,7 +3,7 @@ import { AppError } from '../../common/http/app-error';
 import { CrawlerPlatform } from '../../entities/crawler.entities';
 
 /**
- * 爬虫模块的 URL 闸门（PRD D23）。两条硬约束：
+ * 站外来源登记的 URL 闸门（PRD 10.8 / D28）。两条硬约束：
  * 1. 只登记站外链接，服务端永远不碰内网——管理员手敲的 URL 也要先过这里；
  * 2. 规范化后再落库，同一篇转载换个跟踪参数不算两条。
  *

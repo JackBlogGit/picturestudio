@@ -18,7 +18,7 @@ import {
   Setting,
   UploadFilled,
 } from '@element-plus/icons-vue';
-import type { Profile } from '@/types/api';
+import type { CapKey, Profile } from '@/types/api';
 import { UserLevel } from '@/types/api';
 
 export type CellKey =
@@ -51,6 +51,8 @@ export interface WorkCell {
 interface CellDef extends WorkCell {
   /** 能看到该格的成员等级；临时账号不看这个字段 */
   levels: UserLevel[];
+  /** 等级之外还要求的 D21 能力位：被超管按人关掉时这一格一起消失，缺省即只看等级 */
+  cap?: CapKey;
   /** 临时账号是否渲染该格 */
   forTemp: boolean;
 }
@@ -71,6 +73,7 @@ const DEFS: Record<CellKey, CellDef> = {
     pendingHint: null,
     danger: false,
     levels: ALL_LEVELS,
+    cap: 'upload',
     forTemp: false,
   },
   shoot: {
@@ -82,14 +85,16 @@ const DEFS: Record<CellKey, CellDef> = {
     pendingHint: null,
     danger: false,
     levels: ALL_LEVELS,
+    cap: 'upload',
     forTemp: false,
   },
   crawler: {
     key: 'crawler',
     label: '爬虫',
     icon: Search,
-    to: null,
-    pendingHint: '爬虫模块尚未开放（第 18 章，采集范围与版权约束待定）',
+    // D28：站外来源登记已落地，格子直接进后台那一页；等级仍只有 L4 能看到这一格
+    to: '/admin/crawler',
+    pendingHint: null,
     danger: false,
     levels: [L4],
     forTemp: false,
@@ -144,6 +149,7 @@ const DEFS: Record<CellKey, CellDef> = {
     pendingHint: null,
     danger: false,
     levels: [L3, L4],
+    cap: 'adminConsole',
     forTemp: false,
   },
   dashboard: {
@@ -154,6 +160,7 @@ const DEFS: Record<CellKey, CellDef> = {
     pendingHint: null,
     danger: false,
     levels: [L3, L4],
+    cap: 'adminConsole',
     forTemp: false,
   },
   backup: {
@@ -220,7 +227,7 @@ const TEMP_ORDER: CellKey[] = ['contact', 'take', 'settings', 'destroy'];
  * 后台页现在挂在 /admin，仪表盘是它的首页。
  */
 function manageTarget(profile: Profile): string | null {
-  return profile.kind === 'user' && profile.level >= L3 ? '/admin' : null;
+  return profile.kind === 'user' && profile.level >= L3 && profile.capabilities.adminConsole ? '/admin' : null;
 }
 
 function toCell(def: CellDef): WorkCell {
@@ -240,7 +247,10 @@ export function cellsFor(profile: Profile | null): WorkCell[] {
   if (profile.kind === 'temp') {
     return TEMP_ORDER.filter((key) => DEFS[key].forTemp).map((key) => toCell(DEFS[key]));
   }
-  return MEMBER_ORDER.filter((key) => DEFS[key].levels.includes(profile.level)).map((key) => {
+  return MEMBER_ORDER.filter((key) => {
+    const def = DEFS[key];
+    return def.levels.includes(profile.level) && (!def.cap || profile.capabilities[def.cap]);
+  }).map((key) => {
     const cell = toCell(DEFS[key]);
     if (cell.key === 'manage') {
       const to = manageTarget(profile);

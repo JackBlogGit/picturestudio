@@ -39,9 +39,9 @@ export enum AdminAction {
   WriteSiteSettings = 'write_site_settings',
   ReviewMessages = 'review_messages',
   ShareLinkManagement = 'share_link_management',
-  /** D23 爬虫：站外检索与页面元数据读取，仅超管 */
+  /** D28 爬虫：站外检索与页面元数据读取，仅超管 */
   CrawlerSearch = 'crawler_search',
-  /** D23 爬虫：外链登记表的登记、状态流转与删除，仅超管 */
+  /** D28 爬虫：外链登记表的登记、状态流转与删除，仅超管 */
   CrawlerManage = 'crawler_manage',
 }
 
@@ -53,11 +53,10 @@ export interface MemberActor {
   level: UserLevel;
 }
 
+/** PRD 6.2 的临时账号开关；D27 起上传两开关作废——写档能力由身份决定，临时账号只能取图 */
 export interface TempFlags {
   preview: boolean;
   download: boolean;
-  uploadImg: boolean;
-  uploadFile: boolean;
   editTag: boolean;
 }
 

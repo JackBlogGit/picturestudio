@@ -7,6 +7,7 @@ import { AppError } from '../../common/http/app-error';
 import { UserLevel } from '../../common/enums/user-level.enum';
 import { Actor, ActorKind, AdminAction, Decision } from '../../common/permission/types';
 import { decideAdmin } from '../../common/permission/permission-policy';
+import { LIKE_ESCAPE_SQL, likePattern } from '../../common/sql/like';
 
 /** 各类型标签「本身」的最低维护等级：status 为内置体系，只允许 L3/L4 增删 */
 export const TAG_ADMIN_MIN_LEVEL: Record<TagType, UserLevel> = {
@@ -42,11 +43,6 @@ export function matchExact(rows: Tag[], name: string): Tag | undefined {
   );
 }
 
-/** LIKE 通配符必须转义，否则用户输入 % 就能全表扫 */
-export function likeParam(keyword: string): string {
-  return `%${keyword.replace(/[\\%_]/g, (c) => `\\${c}`)}%`;
-}
-
 function isMember(actor: Actor): actor is { kind: ActorKind.Member; uid: number; level: UserLevel } {
   return actor.kind === ActorKind.Member;
 }
@@ -78,16 +74,21 @@ export class TagService {
       : tags;
   }
 
-  async suggest(actor: Actor, type: TagType | undefined, keyword: string, limit = 20): Promise<Tag[]> {
+  async suggest(actor: Actor, type: TagType | undefined, keyword?: string, limit = 20): Promise<Tag[]> {
     const kw = (keyword ?? '').trim();
-    if (!kw) return [];
+    /** 空关键词是「要把池子端出来」而不是「什么都不匹配」，打标选择器就是这么拉默认列表的 */
     const qb = this.tags
       .createQueryBuilder('t')
       .where('t.mergedInto IS NULL')
-      .andWhere("(t.tagName LIKE :kw ESCAPE '\\\\' OR t.alias LIKE :kw ESCAPE '\\\\')", { kw: likeParam(kw) })
       .orderBy('t.useCount', 'DESC')
       .addOrderBy('t.tagName', 'ASC')
       .take(Math.min(Math.max(limit, 1), 50));
+    if (kw) {
+      qb.andWhere(
+        `(t.tagName LIKE :kw ${LIKE_ESCAPE_SQL} OR t.alias LIKE :kw ${LIKE_ESCAPE_SQL})`,
+        { kw: likePattern(kw) },
+      );
+    }
     if (type) qb.andWhere('t.tagType = :type', { type });
     if (TagService.hidesStatusTags(actor)) {
       qb.andWhere('t.tagType <> :hidden', { hidden: TagType.Status });
@@ -104,7 +105,7 @@ export class TagService {
     if (params.type) qb.andWhere('t.tagType = :type', { type: params.type });
     if (!params.includeMerged) qb.andWhere('t.mergedInto IS NULL');
     const kw = params.keyword?.trim();
-    if (kw) qb.andWhere("t.tagName LIKE :kw ESCAPE '\\\\'", { kw: likeParam(kw) });
+    if (kw) qb.andWhere(`t.tagName LIKE :kw ${LIKE_ESCAPE_SQL}`, { kw: likePattern(kw) });
     return qb.getMany();
   }
 
@@ -339,18 +340,26 @@ export class TagService {
     return result.affected ?? 0;
   }
 
-  /** 图片被删后同步频次，避免 use_count 长期偏高 */
+  /**
+   * 一次取映射、一次取标签，在内存里拼。
+   * 不能用 QB 的实体 select：innerJoin 进来的非关系别名在 getRawMany 下不会 hydrate，
+   * 带出来的 tag 恒为 undefined，图片列表和返图页都会挂在 tag.tagType 上。
+   */
   async tagsOf(imageIds: number[]): Promise<Array<{ imageId: number; tag: Tag }>> {
     if (!imageIds.length) return [];
-    const rows = await this.maps
-      .createQueryBuilder('m')
-      .innerJoin(Tag, 't', 't.id = m.tagId')
-      .select('m.imageId', 'imageId')
-      .addSelect('t', 't')
-      .where('m.imageId IN (:...ids)', { ids: imageIds })
-      .orderBy('m.imageId', 'ASC')
-      .getRawMany<{ imageId: number; t: Tag }>();
-    return rows.map((r) => ({ imageId: Number(r.imageId), tag: r.t }));
+    const maps = await this.maps.find({
+      where: { imageId: In(imageIds) },
+      order: { imageId: 'ASC', tagId: 'ASC' },
+    });
+    if (!maps.length) return [];
+    const tagIds = [...new Set(maps.map((row) => row.tagId))];
+    const tagRows = await this.tags.find({ where: { id: In(tagIds) } });
+    const tagById = new Map<number, Tag>(tagRows.map((tag) => [tag.id, tag]));
+    /** 标签删了但映射残留时跳过这一条，别让脏数据把整页打成 500 */
+    return maps.flatMap((row) => {
+      const tag = tagById.get(row.tagId);
+      return tag ? [{ imageId: row.imageId, tag }] : [];
+    });
   }
 
   private assertLevel(actor: Actor, type: TagType, action: AdminAction, verb: string): void {

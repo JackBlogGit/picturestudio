@@ -44,7 +44,7 @@ export class AuthController {
     @Req() req: ActorRequest,
     @CurrentAuditCtx() ctx: RequestContext,
   ) {
-    return this.auth.tempDestroy(actor, dto.confirmNo, req.tokenPayload?.jti, ctx);
+    return this.auth.tempDestroy(actor, dto.accountTail, req.tokenPayload?.jti, ctx);
   }
 
   @Get('me')

@@ -8,13 +8,35 @@
  * 容器格式：`[版本 1B][IV 12B][密文 + GCM 标签 16B]`。盐与迭代次数随空间存一份，不进每个容器。
  * 同一条密钥派生三个用途（文件名 / 字节 / 口令校验子），靠 GCM 的 AAD 做域分离，
  * 免得把「文件名的密文」当成内容密文来解。
+ *
+ * 关联：这一份是**唯一**碰密码学的模块。`views/VaultView.vue` 调派生与加解密，
+ * `api/vault.ts` 只用这里的 base64 往返，`api/mock/vault.ts` 也 import 它来生成演示密文——
+ * 于是「服务端存的是什么」在 mock 与真后端下形状完全一致，页面代码不用分支。
+ *
+ * 注意：① WebCrypto 只在安全上下文可用（https 或 localhost），非安全上下文下 `subtle` 缺失，
+ * 这里直接抛错让页面显示原因，而不是静默退化成假加密；② 容器固定多 `CONTAINER_OVERHEAD` 字节开销
+ * （1 版本 + 12 IV + 16 标签），配额与体积展示都按容器算；③ `view()` 那一层收窄是给 TS 6 的
+ * DOM 库用的（它把 WebCrypto 入参收到 `ArrayBufferView<ArrayBuffer>`），不是运行时需要；
+ * ④ `.BEKER`（`CIPHER_EXT`）只是密文容器**落盘时叫什么**，不进容器、不参与任何密码学判定，
+ * 换一个后缀同名重传，解出来还是同一份明文。
  */
 
-const VERSION = 1;
 const IV_BYTES = 12;
 const TAG_BYTES = 16;
 const SALT_BYTES = 16;
 const KEY_BYTES = 32;
+
+/** 容器首字节的版本号。页面想在调 `decryptBytes` 之前先分辨「这压根不是容器」时读它 */
+export const CONTAINER_VERSION = 1;
+
+/** 容器固定开销：1 版本 + 12 IV + 16 GCM 标签。密文体积恒等于明文 + 这一数，页面据此解释「变大」 */
+export const CONTAINER_OVERHEAD = 1 + IV_BYTES + TAG_BYTES;
+
+/**
+ * 加密文件落盘时的后缀（PRD 5.7 / D29）：`摊位合同.pdf` 的密文容器保存为 `摊位合同.pdf.BEKER`。
+ * 只加在原名之后、原有扩展名之前，不看它猜类型——`.BEKER` 标识的是**容器**，不是内容格式。
+ */
+export const CIPHER_EXT = 'BEKER';
 
 /** OWASP 对 PBKDF2-HMAC-SHA256 的推荐轮次；实测浏览器单次派生约 0.2s，解锁不至于卡顿 */
 export const KDF_ITERATIONS = 210_000;
@@ -55,6 +77,22 @@ export function b64ToBytes(text: string): Uint8Array {
 /** 口令里的大小写与输入法全/半角都算不同口令，这里只做一次 NFKC 归一，别的都不动 */
 function normalize(pass: string): string {
   return pass.normalize('NFKC');
+}
+
+/** `原名.pdf` → `原名.pdf.BEKER`，即「下载加密文件」那一条存下来的文件名 */
+export function cipherFileName(name: string): string {
+  return `${name}.${CIPHER_EXT}`;
+}
+
+/**
+ * `原名.pdf.BEKER` → `原名.pdf`，即本地「解密」按钮的落盘名。
+ * 容器里**不存文件名**（文件名另用 `pikevault.name` 域封、只随条目存在库中），所以名字只能从后缀还原；
+ * 后缀按大小写不敏感判，手改成 `.beker` 也认。不带后缀时原样返回，由调用方决定要不要提示。
+ */
+export function decipherFileName(name: string): string {
+  const tail = `.${CIPHER_EXT}`;
+  if (name.length > tail.length && name.toLowerCase().endsWith(tail.toLowerCase())) return name.slice(0, -tail.length);
+  return name;
 }
 
 export function newVaultParams(): VaultParams {
@@ -103,7 +141,7 @@ async function seal(key: VaultKey, plain: Uint8Array, aad: string): Promise<Uint
     view(plain),
   );
   const out = new Uint8Array(1 + IV_BYTES + body.byteLength);
-  out[0] = VERSION;
+  out[0] = CONTAINER_VERSION;
   out.set(nonce, 1);
   out.set(new Uint8Array(body), 1 + IV_BYTES);
   return out;
@@ -111,7 +149,7 @@ async function seal(key: VaultKey, plain: Uint8Array, aad: string): Promise<Uint
 
 async function open(key: VaultKey, container: Uint8Array, aad: string): Promise<Uint8Array> {
   if (container.length < 1 + IV_BYTES + TAG_BYTES) throw new Error('密文容器不完整');
-  if (container[0] !== VERSION) throw new Error(`不支持的容器版本 ${container[0]}`);
+  if (container[0] !== CONTAINER_VERSION) throw new Error(`不支持的容器版本 ${container[0]}`);
   const plain = await subtle().decrypt(
     {
       name: 'AES-GCM',

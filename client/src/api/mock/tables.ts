@@ -372,7 +372,7 @@ export const LOGS: MockLog[] = [
   { id: 8, userType: 'user', uid: 3, tempId: null, action: 'share_create', targetType: 'share', targetId: 1, detail: 'album=1, coser=4, snapshot=0, expire=2026-11-15', ip: '114.88.22.10', ua: 'Chrome', result: 1, createTime: '2026-09-26T12:00:00.000Z' },
   { id: 9, userType: 'system', uid: null, tempId: null, action: 'cron_expire_share', targetType: 'share', targetId: 3, detail: '到期自动失效 1 条', ip: '-', ua: 'scheduler', result: 1, createTime: '2026-09-16T00:05:00.000Z' },
   { id: 10, userType: 'user', uid: 1, tempId: null, action: 'settings_update', targetType: 'setting', targetId: null, detail: 'watermark.enabled=false', ip: '112.64.33.88', ua: 'Chrome', result: 1, createTime: '2026-09-29T02:00:00.000Z' },
-  { id: 11, userType: 'user', uid: 3, tempId: null, action: 'temp_create', targetType: 'temp', targetId: 301, detail: 'code=PK-2026-0913, flags=preview,uploadImg,editTag', ip: '114.88.22.10', ua: 'Chrome', result: 1, createTime: '2026-09-13T02:00:00.000Z' },
+  { id: 11, userType: 'user', uid: 3, tempId: null, action: 'temp_create', targetType: 'temp', targetId: 301, detail: 'code=PK-2026-0913, flags=preview,download,editTag', ip: '114.88.22.10', ua: 'Chrome', result: 1, createTime: '2026-09-13T02:00:00.000Z' },
   { id: 12, userType: 'user', uid: 4, tempId: null, action: 'batch_visibility', targetType: 'image', targetId: 103, detail: 'target=public, rejected=SET_PUBLIC_FORBIDDEN', ip: '223.104.5.7', ua: 'Chrome', result: 0, createTime: '2026-09-29T12:00:00.000Z' },
 ];
 

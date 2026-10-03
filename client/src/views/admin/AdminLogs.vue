@@ -47,6 +47,12 @@ const ACTIONS = [
   'share_visit',
   'settings_update',
   'user_create',
+  'temp_destroy',
+  'crawler_searched',
+  'crawler_probed',
+  'crawler_link_created',
+  'crawler_link_status',
+  'crawler_link_removed',
   'logs_export',
 ];
 
@@ -168,7 +174,7 @@ onMounted(load);
         @keyup.enter="reset"
         @clear="reset"
       />
-      <el-button size="small" @click="load">查询</el-button>
+      <el-button size="small" @click="reset">查询</el-button>
       <span class="pk-muted">共 {{ total }} 条</span>
     </div>
 

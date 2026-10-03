@@ -22,7 +22,16 @@ const ratio = computed(() => (props.image.width >= props.image.height ? '4 / 3' 
 </script>
 
 <template>
-  <figure class="pk-tile" :style="{ aspectRatio: ratio }" @click="emit('open', image)">
+  <figure
+    class="pk-tile"
+    :style="{ aspectRatio: ratio }"
+    role="button"
+    tabindex="0"
+    :aria-label="`打开预览 ${image.filename}`"
+    @click="emit('open', image)"
+    @keydown.enter.prevent="emit('open', image)"
+    @keydown.space.prevent="emit('open', image)"
+  >
     <img :src="src" :alt="image.filename" loading="lazy" />
 
     <button
@@ -30,6 +39,8 @@ const ratio = computed(() => (props.image.width >= props.image.height ? '4 / 3' 
       type="button"
       class="pk-tile__pick"
       :class="{ 'is-on': selected }"
+      :aria-label="selected ? '取消选择该图' : '选择该图'"
+      :title="selected ? '取消选择' : '选择'"
       @click.stop="emit('toggle', image.id)"
     >
       <span v-if="selected">✓</span>

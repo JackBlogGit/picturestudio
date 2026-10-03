@@ -28,7 +28,7 @@ DB_DATABASE=./piks_photo.db
 
 - 根据 `db.type` 动态配置 TypeORM
 - SQLite 模式下：
-  - 禁用 `namingStrategy`（SQLite 不支持）
+  - 不设 `namingStrategy`：列名沿用实体属性名，与 MySQL 侧的 snake_case 不一致（策略本身与驱动无关，SQLite 也认，只是这份配置没启用）。目前安全，因为运行时查询全走 QueryBuilder 的属性路径，手写 SQL 只出现在只管 MySQL 的迁移里
   - 启用 `synchronize: true`（自动同步表结构）
 
 ### 3. 实体兼容性修复
@@ -51,13 +51,24 @@ SQLite 不支持某些 MySQL 特性，已进行以下修复：
 
 #### 重复索引重命名
 
-避免不同实体间的索引名称冲突：
+SQLite 的索引名是**全库唯一**（MySQL 只要求同表唯一），所以实体上的 `@Index` 名字必须全局不撞车，否则全新库 `synchronize` 直接报 `index xxx already exists`：
+
 - `folders.parentId`: idx_parent → idx_folder_parent
 - `files.uploadUid`: idx_upload_uid → idx_file_upload_uid
 - `files.md5`: idx_md5 → idx_file_md5
 - `images.uploadUid`: idx_upload_uid → idx_img_upload_uid
 - `images.md5`: idx_md5 → idx_img_md5
 - `temp_accounts.expireTime`: idx_expire → idx_temp_expire
+- `coser_share_links.expireTime`: idx_expire → idx_share_expire
+- `upload_sessions.status+expireTime`: idx_expire → idx_session_expire
+
+新增索引时同步改 `server/sql/schema.sql`，`schema-alignment.spec.ts` 会守住这两侧的名字。
+
+#### LIKE 的 ESCAPE 不能用反斜杠
+
+MySQL 会先把字符串字面量里的双反斜杠折成一个，SQLite **完全不处理反斜杠转义**，于是老写法在 SQLite 上交给 ESCAPE 的是两个字符，报 `ESCAPE expression must be a single character`；而且这错要到语句真正执行（stepping）时才抛，表现就是带关键词的搜索接口 500，启动却一切正常。
+
+现在一律用 `src/common/sql/like.ts`：`LIKE_ESCAPE_SQL`（`ESCAPE '!'`）配 `likePattern` / `likePrefixPattern`，两种方言拿到的转义符逐字节相同。`TypeORM` 的 `Like()` 找不到 ESCAPE 的位置，需要显式 ESCAPE 的检索请改用 QueryBuilder。
 
 ## 使用方法
 

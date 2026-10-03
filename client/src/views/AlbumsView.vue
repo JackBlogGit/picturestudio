@@ -27,8 +27,8 @@ type TabName = 'list' | 'upload';
  */
 const TABS = computed(() => [
   { name: 'list' as TabName, label: '相册' },
-  // 传图入口认的是能力位而不是身份：正式成员默认可见，开了「传图」开关的临时账号也给
-  // （与入口页那一格、路由守卫同源；超管按人关掉这一位时，标签与深链一起消失）
+  // 传图入口认的是 caps.upload，而这一位只属于正式成员（D27：临时账号只能取图）
+  // 与入口页那一格、路由守卫同源；超管按人关掉这一位时，标签与深链一起消失
   ...(session.caps.upload ? [{ name: 'upload' as TabName, label: '拍展传图' }] : []),
 ]);
 
@@ -160,7 +160,8 @@ watch(() => [query.page, query.includeArchived, query.status, query.stage], load
     </div>
 
     <!-- 拍展传图 tab：复用原 ShootUploadView，它自己会读 route.query.album 做预选 -->
-    <ShootUploadView v-show="tab === 'upload'" />
+    <!-- v-if 按身份挂/卸（D27：临时账号与游客连隐藏面板都不该有），v-show 保住成员切 tab 时的队列 -->
+    <ShootUploadView v-if="session.caps.upload" v-show="tab === 'upload'" />
   </section>
 </template>
 

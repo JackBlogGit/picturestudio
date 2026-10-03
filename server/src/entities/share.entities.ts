@@ -14,7 +14,7 @@ import { User } from './account.entities';
 
 @Entity('coser_share_links')
 @Index('idx_album_coser', ['albumId', 'coserTagId'])
-@Index('idx_expire', ['expireTime', 'revoked'])
+@Index('idx_share_expire', ['expireTime', 'revoked'])
 export class CoserShareLink {
   @PrimaryGeneratedColumn()
   id: number;
@@ -22,8 +22,9 @@ export class CoserShareLink {
   @Column({ length: 128, unique: true })
   shareToken: string;
 
-  @Column({ type: 'int' })
-  albumId: number;
+  /** album 口径 = 本相册按标签命中；person 口径（返图返给个人）跨相册汇总，此时为 NULL。链接口径由本列推导，不设 scope 列 */
+  @Column({ type: 'int', nullable: true })
+  albumId: number | null;
 
   @ManyToOne(() => Album, { onDelete: 'CASCADE' })
   @JoinColumn({ name: 'album_id' })

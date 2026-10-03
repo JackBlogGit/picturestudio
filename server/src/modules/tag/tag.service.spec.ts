@@ -5,7 +5,6 @@ import { Actor, ActorKind } from '../../common/permission/types';
 import { AppError } from '../../common/http/app-error';
 import { AuditService, RequestContext } from '../audit/audit.service';
 import {
-  likeParam,
   matchExact,
   normalizeTagName,
   splitAlias,
@@ -23,7 +22,7 @@ const temp = (tempId = 7): Actor => ({
   ownerUid: 100,
   expired: false,
   disabled: false,
-  flags: { preview: true, download: false, uploadImg: true, uploadFile: false, editTag: true },
+  flags: { preview: true, download: false, editTag: true },
   quotaBytes: 0,
   usedBytes: 0,
   albumIds: [],
@@ -193,10 +192,6 @@ describe('标签纯函数', () => {
     expect(matchExact(rows, 'yuzu')?.id).toBe(2);
     expect(matchExact(rows, '柚子酱')?.id).toBe(2);
     expect(matchExact(rows, '子')).toBeUndefined();
-  });
-
-  it('LIKE 通配符与转义符都要转义，否则 % 能全表扫', () => {
-    expect(likeParam('20%_a\\b')).toBe('%20\\%\\_a\\\\b%');
   });
 
   it('标签名去空白并拦下超长/空值', () => {

@@ -27,12 +27,10 @@ const toFlag = ({ value }: { value: unknown }): number | unknown => {
 
 const FLAG_VALUES = [0, 1];
 
-/** PRD 6.2 的 5 个开关，键名与实体列一一对应 */
+/** PRD 6.2 的 3 个开关，键名与实体列一一对应（D27：上传两开关作废，临时账号只能取图） */
 export const TEMP_FLAG_FIELDS = [
   'allowPreview',
   'allowDownload',
-  'allowUploadImg',
-  'allowUploadFile',
   'allowEditTag',
 ] as const;
 export type TempFlagField = (typeof TEMP_FLAG_FIELDS)[number];
@@ -106,16 +104,6 @@ export class CreateTempAccountDto {
   @Transform(toFlag)
   @IsIn(FLAG_VALUES)
   allowDownload?: number;
-
-  @IsOptional()
-  @Transform(toFlag)
-  @IsIn(FLAG_VALUES)
-  allowUploadImg?: number;
-
-  @IsOptional()
-  @Transform(toFlag)
-  @IsIn(FLAG_VALUES)
-  allowUploadFile?: number;
 
   @IsOptional()
   @Transform(toFlag)

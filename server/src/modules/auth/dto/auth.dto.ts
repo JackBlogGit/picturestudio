@@ -41,5 +41,5 @@ export class TempDestroyDto {
   @Transform(trim)
   @IsString()
   @Length(1, 16)
-  confirmNo: string;
+  accountTail: string;
 }

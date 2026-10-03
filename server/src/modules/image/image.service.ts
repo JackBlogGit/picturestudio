@@ -11,10 +11,11 @@ import { Action, Actor, ActorKind, ResourceType } from '../../common/permission/
 import { Visibility } from '../../common/enums/visibility.enum';
 import { UserLevel } from '../../common/enums/user-level.enum';
 import { StorageService, StoredFile } from '../../common/storage/storage.service';
-import { Album, AlbumStatus, Image, ImageTagMap, LogTargetType, Tag, TagType } from '../../entities';
+import { Album, AlbumStage, AlbumStatus, Image, ImageTagMap, LogTargetType, Tag, TagType } from '../../entities';
 import { AuditService, RequestContext } from '../audit/audit.service';
 import { AlbumService, visibleVisibilities } from '../album/album.service';
 import { TagService } from '../tag/tag.service';
+import { tagMatchFilter } from '../tag/tag-match';
 import { BatchTagsDto, BatchVisibilityDto, ListImageDto, UpdateImageDto } from './dto/image.dto';
 import { imageView, ImageView, TagView, visibleTags } from './image-shape';
 
@@ -80,7 +81,7 @@ export class ImageService {
     return pagedList(
       rows.map((row) =>
         imageView(row, actor, {
-          original: actor.kind === ActorKind.Member,
+          albumStage: album.stage,
           tags: tagMap.get(row.id) ?? [],
         }),
       ),
@@ -141,7 +142,7 @@ export class ImageService {
       changed.push('sort');
       image.sort = dto.sort;
     }
-    if (!changed.length) return this.view(image, actor);
+    if (!changed.length) return this.view(image, actor, album.stage);
 
     await this.images.save(image);
     await this.audit.record(actor, ctx, {
@@ -150,7 +151,7 @@ export class ImageService {
       targetId: image.id,
       detail: changed.join(','),
     });
-    return this.view(image, actor);
+    return this.view(image, actor, album.stage);
   }
 
   async batchTags(dto: BatchTagsDto, actor: Actor, ctx: RequestContext): Promise<BatchResult> {
@@ -288,8 +289,7 @@ export class ImageService {
 
   /**
    * 类型之间 AND、同类型多值 OR（PRD 4.4）。
-   * 上级文档给的写法是 COUNT(DISTINCT tag_id)=N，那只能表达「全部标签都要命中」，
-   * 与同类型多值 OR 冲突，这里改成 COUNT(DISTINCT tag_type)=组数。
+   * 命中片段的生成口径与分享链接共用 tagMatchFilter，两处不会各说各话。
    */
   private async matchedImageIds(album: Album, query: ListImageDto): Promise<number[] | null> {
     const wanted = [...new Set([...(query.tags ?? []), ...(query.status ?? [])])];
@@ -310,30 +310,16 @@ export class ImageService {
       );
     }
 
-    const groups = new Map<TagType, number[]>();
-    for (const tag of rows) {
-      const bucket = groups.get(tag.tagType) ?? [];
-      bucket.push(tag.id);
-      groups.set(tag.tagType, bucket);
-    }
-
-    const clauses: string[] = [];
-    const params: Record<string, unknown> = { groups: groups.size };
-    [...groups.entries()].forEach(([type, ids], index) => {
-      clauses.push(`(t.tagType = :type${index} AND t.id IN (:...tagIds${index}))`);
-      params[`type${index}`] = type;
-      params[`tagIds${index}`] = ids;
-    });
-
+    const filter = tagMatchFilter(rows);
     const raw = await this.images
       .createQueryBuilder('i')
       .innerJoin(ImageTagMap, 'm', 'm.imageId = i.id')
       .innerJoin(Tag, 't', 't.id = m.tagId')
       .where('i.albumId = :albumId', { albumId: album.id })
-      .andWhere(`(${clauses.join(' OR ')})`, params)
+      .andWhere(filter.where, filter.params)
       .select('i.id', 'id')
       .groupBy('i.id')
-      .having('COUNT(DISTINCT t.tagType) = :groups', { groups: groups.size })
+      .having(filter.having, filter.params)
       .getRawMany<{ id: number | string }>();
     return raw.map((r) => Number(r.id));
   }
@@ -372,10 +358,10 @@ export class ImageService {
     return map;
   }
 
-  private async view(image: Image, actor: Actor): Promise<ImageView> {
+  private async view(image: Image, actor: Actor, albumStage: AlbumStage): Promise<ImageView> {
     const tagMap = await this.tagsOfMany([image.id], actor);
     return imageView(image, actor, {
-      original: actor.kind === ActorKind.Member,
+      albumStage,
       tags: tagMap.get(image.id) ?? [],
     });
   }

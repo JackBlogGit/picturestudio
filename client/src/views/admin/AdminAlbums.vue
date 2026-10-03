@@ -4,6 +4,7 @@
  * 归档／锁定后的拒绝回执会原样弹出来，不在界面上做二次判断。
  * D25：超管在这里逐册关掉册内功能（「功能开关」），判定落在 policy 层的相册级闸门，
  * 与按人的能力位（PRD 6.4）是两条独立的轴，两道都放行才做得成。
+ * D34：这一页的每一项改动提交前都要再验证一次当前账号口令。
  */
 import { computed, onMounted, reactive, ref } from 'vue';
 import { ElMessage, ElMessageBox } from 'element-plus';
@@ -27,6 +28,7 @@ import {
   VISIBILITY_LABEL,
 } from '@/types/api';
 import { formatDate } from '@/utils/format';
+import { askReauth, endReauth } from '@/utils/reauth';
 import { useSessionStore } from '@/stores/session';
 
 const session = useSessionStore();
@@ -58,6 +60,17 @@ const form = reactive({
   stage: 'post' as AlbumStage,
 });
 
+/** 弹窗打开那一刻的字段值，「重置」回到这里 */
+const formBase = ref<Pick<typeof form, 'name' | 'eventName' | 'eventDate' | 'location' | 'description' | 'visibility' | 'stage'>>({
+  name: '',
+  eventName: '',
+  eventDate: '',
+  location: '',
+  description: '',
+  visibility: 'member',
+  stage: 'post',
+});
+
 const statusText = (status: AlbumStatus): string => ALBUM_STATUS_LABEL[status];
 
 const visOptions = computed(() => session.visibilityOptions as readonly Visibility[]);
@@ -84,7 +97,20 @@ function fill(row?: AlbumRowView): void {
     form.visibility = 'member';
     form.stage = 'post';
   }
+  formBase.value = {
+    name: form.name,
+    eventName: form.eventName,
+    eventDate: form.eventDate,
+    location: form.location,
+    description: form.description,
+    visibility: form.visibility,
+    stage: form.stage,
+  };
   form.open = true;
+}
+
+function resetForm(): void {
+  Object.assign(form, formBase.value);
 }
 
 async function load(): Promise<void> {
@@ -113,6 +139,7 @@ function reset(): void {
 }
 
 async function submit(): Promise<void> {
+  if (!(await askReauth(`${form.mode === 'create' ? '新建' : '编辑'}相册「${form.name || '未命名'}」`))) return;
   busy.value = true;
   try {
     if (form.mode === 'create') {
@@ -144,6 +171,7 @@ async function submit(): Promise<void> {
     ElMessage.error(errorText(err));
   } finally {
     busy.value = false;
+    endReauth();
   }
 }
 
@@ -154,6 +182,7 @@ const NEXT_STATUS: Record<number, { to: number; label: string }> = {
 };
 
 async function changeStatus(row: AlbumRowView, target: number): Promise<void> {
+  if (!(await askReauth(`把「${row.name}」改为${target === AlbumStatus.Normal ? '正常' : target === AlbumStatus.Archived ? '归档' : '锁定'}`))) return;
   busy.value = true;
   try {
     await setAlbumStatus(row.id, target);
@@ -163,10 +192,12 @@ async function changeStatus(row: AlbumRowView, target: number): Promise<void> {
     ElMessage.error(errorText(err));
   } finally {
     busy.value = false;
+    endReauth();
   }
 }
 
 async function lock(row: AlbumRowView): Promise<void> {
+  if (!(await askReauth(`锁定相册「${row.name}」`))) return;
   busy.value = true;
   try {
     await setAlbumStatus(row.id, AlbumStatus.Locked);
@@ -176,6 +207,7 @@ async function lock(row: AlbumRowView): Promise<void> {
     ElMessage.error(errorText(err));
   } finally {
     busy.value = false;
+    endReauth();
   }
 }
 
@@ -189,6 +221,7 @@ async function remove(row: AlbumRowView): Promise<void> {
   } catch {
     return;
   }
+  if (!(await askReauth(`删除相册「${row.name}」`))) return;
   busy.value = true;
   try {
     const result = await deleteAlbum(row.id);
@@ -198,6 +231,7 @@ async function remove(row: AlbumRowView): Promise<void> {
     ElMessage.error(errorText(err));
   } finally {
     busy.value = false;
+    endReauth();
   }
 }
 
@@ -213,19 +247,34 @@ const capsForm = reactive({
   inherited: [] as AlbumCapKey[],
 });
 
+/** 关闭项集合换算成「每一项是否允许」，弹窗打开时的基线与当前值都走这里 */
+function capsAllowedFrom(ownOff: AlbumCapKey[], inherited: AlbumCapKey[]): Record<AlbumCapKey, boolean> {
+  const allowed = {} as Record<AlbumCapKey, boolean>;
+  for (const key of ALBUM_CAP_KEYS) allowed[key] = !ownOff.includes(key) && !inherited.includes(key);
+  return allowed;
+}
+
+/** 开关弹窗打开那一刻的允许状态，「重置」回到这里 */
+const capsBase = ref<Record<AlbumCapKey, boolean>>(capsAllowedFrom([], []));
+
+function resetCaps(): void {
+  capsForm.allowed = { ...capsBase.value };
+}
+
 function fillCaps(row: AlbumRowView): void {
   const ownOff = row.capsOwnOff ?? [];
   const inherited = row.capsInheritedOff ?? [];
   capsForm.id = row.id;
   capsForm.name = row.name;
   capsForm.inherited = inherited;
-  const allowed = {} as Record<AlbumCapKey, boolean>;
-  for (const key of ALBUM_CAP_KEYS) allowed[key] = !ownOff.includes(key) && !inherited.includes(key);
+  const allowed = capsAllowedFrom(ownOff, inherited);
   capsForm.allowed = allowed;
+  capsBase.value = { ...allowed };
   capsForm.open = true;
 }
 
 async function submitCaps(): Promise<void> {
+  if (!(await askReauth(`保存「${capsForm.name}」的册内功能开关`))) return;
   busy.value = true;
   try {
     // 只写本册自己的决定：父册带下来的项不进子册的 albumCaps（子册也没资格替父册打开）
@@ -238,6 +287,7 @@ async function submitCaps(): Promise<void> {
     ElMessage.error(errorText(err));
   } finally {
     busy.value = false;
+    endReauth();
   }
 }
 
@@ -349,7 +399,12 @@ onMounted(load);
           >
             锁定
           </el-button>
-          <el-button size="small" text @click="changeStatus(row, NEXT_STATUS[row.status as AlbumStatus].to)">
+          <el-button
+            v-if="NEXT_STATUS[row.status as AlbumStatus]"
+            size="small"
+            text
+            @click="changeStatus(row, NEXT_STATUS[row.status as AlbumStatus].to)"
+          >
             {{ NEXT_STATUS[row.status as AlbumStatus].label }}
           </el-button>
           <el-button size="small" text type="danger" @click="remove(row)">删除</el-button>
@@ -408,6 +463,7 @@ onMounted(load);
       </el-form>
       <template #footer>
         <el-button @click="form.open = false">取消</el-button>
+        <el-button @click="resetForm">重置</el-button>
         <el-button type="primary" :loading="busy" @click="submit">保存</el-button>
       </template>
     </el-dialog>
@@ -436,9 +492,11 @@ onMounted(load);
       <p class="pk-muted pk-admin__hint">
         改名、改档位、锁定／归档、删除相册与改这批开关本身属于「相册管理」，<b>不受这批开关约束</b>，
         超管不会把自己锁在相册外面；已发出的返图链接也不回溯收回，关掉「建返图链接」只拦新建。
+        点「保存开关」要先填当前账号的登录口令（PRD 6.1 / D34），「重置」只回到打开时的状态。
       </p>
       <template #footer>
         <el-button @click="capsForm.open = false">取消</el-button>
+        <el-button @click="resetCaps">重置</el-button>
         <el-button type="primary" :loading="busy" @click="submitCaps">保存开关</el-button>
       </template>
     </el-dialog>

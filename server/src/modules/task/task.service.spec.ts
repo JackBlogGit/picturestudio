@@ -24,7 +24,7 @@ function tempActor(tempId = 7): Actor {
     ownerUid: SELF,
     expired: false,
     disabled: false,
-    flags: { preview: true, download: false, uploadImg: true, uploadFile: false, editTag: false },
+    flags: { preview: true, download: false, editTag: false },
     quotaBytes: 0,
     usedBytes: 0,
     albumIds: [],
@@ -249,8 +249,8 @@ describe('M2.5 搜索与排序', () => {
   it('q 走前缀匹配并转义 LIKE 通配符', async () => {
     const f = build([ticketRow()]);
     await f.service.list(member(4), { q: 'YK8%' } as ListTaskDto);
-    expect(f.qb.params.kw).toBe('YK8\\%%');
-    expect(f.qb.conditions.join(' ')).toContain("t.accountNo LIKE :kw ESCAPE '\\\\'");
+    expect(f.qb.params.kw).toBe('YK8!%%');
+    expect(f.qb.conditions.join(' ')).toContain("t.accountNo LIKE :kw ESCAPE '!'");
   });
 
   it('q 短于 2 字符不发查询', async () => {

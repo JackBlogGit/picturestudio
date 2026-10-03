@@ -5,6 +5,7 @@
  */
 import type {
   AlbumCapsView,
+  AlbumStage,
   AlbumView,
   BatchResult,
   Identity,
@@ -48,8 +49,10 @@ import {
 import type { Actor, MemberActor, ResourceRef } from './policy';
 import {
   API,
+  DEMO_PASSWORD,
   albumCapsView,
   albumRef,
+  assertReauthPassword,
   assertWritable,
   csv,
   currentActor,
@@ -64,6 +67,7 @@ import {
   paged,
   readableAlbum,
   readableImages,
+  stashReauth,
   str,
   toView,
 } from './shared';
@@ -121,6 +125,14 @@ import {
 } from './admin';
 import { listTasks, peekAccountCode, registerTemp, setTaskStage } from './temps';
 import {
+  crawlerCreate,
+  crawlerList,
+  crawlerProbe,
+  crawlerRemove,
+  crawlerSearch,
+  crawlerUpdate,
+} from './crawler';
+import {
   vaultCipher,
   vaultDelete,
   vaultDestroy,
@@ -142,8 +154,11 @@ function login(body: Record<string, unknown>): LoginResult {
   const password = String(body.password ?? '');
   const user = USERS.find((u) => u.username === username);
   // 账号不存在与口令错误同一文案，避免账号枚举
-  if (!user || password !== 'demo1234') {
+  if (!user || password !== (user.password ?? DEMO_PASSWORD)) {
     fail(401, 'BAD_CREDENTIALS', '账号或密码错误');
+  }
+  if (user.disabled) {
+    fail(401, 'ACCOUNT_DISABLED', '该账号已被禁用，请联系超级管理员');
   }
   const identity: Identity = {
     kind: 'user',
@@ -175,6 +190,31 @@ function tempToken(body: Record<string, unknown>): LoginResult {
       expiresAt: temp.expiresAt,
     },
   };
+}
+
+/** 改密：镜像 server auth.service.changePassword 的错误码与「临时账号无原口令可直接设」的规则 */
+function changePassword(actor: Actor, body: Record<string, unknown>): null {
+  if (actor.kind === 'guest' || actor.kind === 'share') {
+    fail(401, 'LOGIN_REQUIRED', '需登录后修改密码');
+  }
+  const newPassword = String(body.newPassword ?? '');
+  if (newPassword.length < 8) fail(400, 'WEAK_PASSWORD', '新密码至少 8 位');
+  const oldPassword = String(body.oldPassword ?? '');
+
+  if (actor.kind === 'member') {
+    const user = USERS.find((u) => u.uid === actor.uid);
+    if (!user || oldPassword !== (user.password ?? DEMO_PASSWORD)) {
+      fail(401, 'BAD_CREDENTIALS', '原密码错误');
+    }
+    user.password = newPassword;
+    return null;
+  }
+
+  const temp = TEMPS.find((t) => t.tempId === actor.tempId);
+  if (!temp) fail(401, 'TEMP_NOT_FOUND', '临时账号不存在');
+  if (temp.password && oldPassword !== temp.password) fail(401, 'BAD_CREDENTIALS', '原密码错误');
+  temp.password = newPassword;
+  return null;
 }
 
 function me(actor: Actor): Profile {
@@ -475,6 +515,8 @@ interface MockSession {
   albumId: number;
   /** 本批图片的归属临时账号 ID（拍展传图必填；成员替 temp 代传时记录 tempId 而非 member 自己） */
   tempId: number;
+  /** 本批图片的阶段（D31）；null = 上传时没选，落库时回落到所属相册的阶段 */
+  stage: AlbumStage | null;
   filename: string;
   size: number;
   chunkSize: number;
@@ -483,6 +525,15 @@ interface MockSession {
 }
 
 const SESSIONS = new Map<string, MockSession>();
+
+/** 阶段只认 pre / post，不传即 null（沿用相册阶段）；传了别的一律拒收，不静默回落 */
+function parseStage(value: unknown): AlbumStage | null {
+  if (value === undefined || value === null || value === '') return null;
+  if (value !== 'pre' && value !== 'post') {
+    fail(400, 'VALIDATION_FAILED', 'stage 只能是 pre 或 post');
+  }
+  return value;
+}
 
 /** 片长夹在 256KB~16MB，片数超预算时自动放大片长而不是拒收大文件 */
 function chunkPlan(fileSize: number, declared: number): { chunkSize: number; totalChunks: number } {
@@ -527,6 +578,7 @@ function sessionView(session: MockSession): Record<string, unknown> {
     uploadId: session.uploadId,
     albumId: session.albumId,
     filename: session.filename,
+    stage: session.stage,
     size: session.size,
     chunkSize: session.chunkSize,
     totalChunks: session.totalChunks,
@@ -540,7 +592,7 @@ function uploadAlbum(albumId: number, actor: Actor): AlbumView {
   assertWritable(actor);
   const album = albumById(albumId);
   if (!album) fail(404, 'NOT_FOUND', '相册不存在或无权查看');
-  // 成员读 caps.upload，临时账号读「传图」开关＋白名单＋档位，都在 decide() 里判
+  // 成员读 caps.upload，临时账号由 decideTemp 按身份挡下（D27：只能取图，不能自传）
   const decision = decide(Action.Upload, actor, albumRef(album));
   if (!decision.allowed) fail(decision.status, decision.reason, decision.message);
   if (album.status === 3) fail(409, 'ALBUM_LOCKED', '相册已锁定，禁止上传与修改');
@@ -562,33 +614,24 @@ function createSession(body: Record<string, unknown>, actor: Actor): Record<stri
   const size = Number(body.fileSize);
   if (!filename) fail(400, 'VALIDATION_FAILED', 'filename 不能为空');
   if (!Number.isInteger(size) || size < 1) fail(400, 'VALIDATION_FAILED', 'fileSize 必须是整数');
+  const stage = parseStage(body.stage);
 
-  // 归属工单：临时账号本人传图就是交付给自己；成员代传必须点名交付给谁
+  // 归属工单：拍展传图一律由正式成员发起并点名交付给哪位临时账号（D27：临时账号不能自传）
   const rawTempId = Number(body.tempId);
-  let ownerTempId: number;
-  if (actor.kind === 'temp') {
-    // 客户端带的 tempId 只作复核，不许把自己的返图挂到别人的工单上
-    if (Number.isInteger(rawTempId) && rawTempId !== actor.tempId) {
-      fail(403, 'TEMP_NOT_SELF', '临时账号只能把返图交付给自己');
-    }
-    ownerTempId = actor.tempId;
-  } else {
-    if (!Number.isInteger(rawTempId) || rawTempId <= 0) {
-      fail(400, 'VALIDATION_FAILED', '拍展传图必须指定要交付给哪个临时账号');
-    }
-    const temp = TEMPS.find((t) => t.tempId === rawTempId);
-    if (!temp) fail(404, 'TEMP_NOT_FOUND', '指定的临时账号不存在');
-    if (!temp.flags.uploadImg) fail(403, 'TEMP_SWITCH_OFF', '该临时账号未开通「传图」开关');
-    if (!temp.albumIds.includes(album.id)) {
-      fail(403, 'NOT_IN_WHITELIST', `相册「${album.name}」不在临时账号 ${temp.code} 的授权范围内`);
-    }
-    ownerTempId = temp.tempId;
+  if (!Number.isInteger(rawTempId) || rawTempId <= 0) {
+    fail(400, 'VALIDATION_FAILED', '拍展传图必须指定要交付给哪个临时账号');
   }
+  const temp = TEMPS.find((t) => t.tempId === rawTempId);
+  if (!temp) fail(404, 'TEMP_NOT_FOUND', '指定的临时账号不存在');
+  if (!temp.albumIds.includes(album.id)) {
+    fail(403, 'NOT_IN_WHITELIST', `相册「${album.name}」不在临时账号 ${temp.code} 的授权范围内`);
+  }
+  const ownerTempId = temp.tempId;
 
   assertUploadPolicy(filename, size, actor);
   const { chunkSize, totalChunks } = chunkPlan(size, settingNumber('upload.chunk_size'));
   const uploadId = `mock-${Date.now().toString(36)}-${SESSIONS.size + 1}`;
-  const session: MockSession = { uploadId, albumId: album.id, tempId: ownerTempId, filename, size, chunkSize, totalChunks, uploaded: [] };
+  const session: MockSession = { uploadId, albumId: album.id, tempId: ownerTempId, stage, filename, size, chunkSize, totalChunks, uploaded: [] };
   SESSIONS.set(uploadId, session);
   return sessionView(session);
 }
@@ -612,7 +655,7 @@ function completeUpload(uploadId: string, actor: Actor): ImageView {
   const uid = actor.kind === 'member' ? actor.uid : actor.kind === 'temp' ? actor.ownerUid : 0;
   // 图片总是归属到拍展指定的那个临时账号——不管上传者是成员还是该 temp 本人
   const tempId = session.tempId || null;
-  const seed = addImage(session.albumId, session.filename, session.size, uid, tempId);
+  const seed = addImage(session.albumId, session.filename, session.size, uid, tempId, session.stage);
   quotaOwner(actor)?.add(session.size);
   SESSIONS.delete(uploadId);
   return toView(seed, actor);
@@ -625,15 +668,18 @@ export async function handleMock(method: string, path: string, opts: RequestOpti
   const body = (opts.body ?? {}) as Record<string, unknown>;
   const query = opts.query;
 
+  stashReauth(opts.reauth);
+  // 带了口令就先核对一次；「非带不可」的判定在各接口等级之后做，越权的 403 不该被 401 抢走
+  if (method !== 'GET' && opts.reauth && actor.kind === 'member') {
+    assertReauthPassword(actor, opts.reauth);
+  }
+
   if (method === 'POST' && path === '/auth/login') return login(body);
   if (method === 'POST' && path === '/auth/temp-token') return tempToken(body);
   if (method === 'GET' && path === '/auth/me') return me(actor);
   if (method === 'POST' && path === '/auth/temp-destroy') return tempDestroy(actor, body);
   if (method === 'POST' && path === '/auth/logout') return { loggedOut: true };
-  if (method === 'PUT' && path === '/auth/password') {
-    if (actor.kind === 'guest' || actor.kind === 'share') fail(401, 'LOGIN_REQUIRED', '需登录后操作');
-    return null;
-  }
+  if (method === 'PUT' && path === '/auth/password') return changePassword(actor, body);
 
   if (method === 'GET' && path === '/albums') return albumList(query, actor);
   if (method === 'POST' && path === '/albums') return createAlbum(body, actor);
@@ -785,6 +831,16 @@ export async function handleMock(method: string, path: string, opts: RequestOpti
   if (method === 'GET' && path === '/admin/logs') return listLogs(query, actor);
   if (method === 'GET' && path === '/admin/settings') return listSettings(actor);
   if (method === 'PUT' && path === '/admin/settings') return updateSettings(body, actor);
+
+  // ---------------- 站外来源登记（PRD 10.8 / D28，整组仅 L4，闸门在 crawler.ts 里） ----------------
+
+  if (method === 'POST' && path === '/admin/crawler/search') return crawlerSearch(body, actor);
+  if (method === 'POST' && path === '/admin/crawler/probe') return crawlerProbe(body, actor);
+  if (method === 'GET' && path === '/admin/crawler/links') return crawlerList(query, actor);
+  if (method === 'POST' && path === '/admin/crawler/links') return crawlerCreate(body, actor);
+  const crawlerLinkMatch = /^\/admin\/crawler\/links\/(\d+)$/.exec(path);
+  if (crawlerLinkMatch && method === 'PATCH') return crawlerUpdate(Number(crawlerLinkMatch[1]), body, actor);
+  if (crawlerLinkMatch && method === 'DELETE') return crawlerRemove(Number(crawlerLinkMatch[1]), actor);
 
   return fail(404, 'NOT_FOUND', `mock 未实现 ${method} ${path}`);
 }

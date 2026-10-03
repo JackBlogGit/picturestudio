@@ -9,6 +9,7 @@
     "start:dev": "nest start --watch",
     "start:prod": "node dist/main.js",
     "typecheck": "tsc -p tsconfig.json --noEmit",
+    "seed": "ts-node -r tsconfig-paths/register src/database/seed.ts",
     "test": "node --experimental-vm-modules node_modules/jest/bin/jest.js",
     "test:watch": "node --experimental-vm-modules node_modules/jest/bin/jest.js --watch",
     "migration:generate": "typeorm-ts-node-commonjs migration:generate -d src/data-source.ts",

@@ -4,6 +4,8 @@ export interface Env {
   nodeEnv: string;
   port: number;
   corsOrigin: string[];
+  /** 返图链接对外地址的域名前缀，未配 SITE_URL 时退回 CORS_ORIGIN 的第一项 */
+  siteUrl: string;
   db: { 
     type: 'mysql' | 'better-sqlite3';
     host?: string; 
@@ -35,11 +37,13 @@ export function loadEnv(source: NodeJS.ProcessEnv = process.env): Env {
   }
   
   const dbType = (source.DB_TYPE ?? 'better-sqlite3') as 'mysql' | 'better-sqlite3';
-  
+  const corsOrigin = (source.CORS_ORIGIN ?? 'http://localhost:5173').split(',');
+
   return {
     nodeEnv,
     port: Number(source.PORT ?? 3000),
-    corsOrigin: (source.CORS_ORIGIN ?? 'http://localhost:5173').split(','),
+    corsOrigin,
+    siteUrl: (source.SITE_URL ?? corsOrigin[0] ?? '').replace(/\/+$/, ''),
     db: dbType === 'better-sqlite3' 
       ? {
           type: 'better-sqlite3',

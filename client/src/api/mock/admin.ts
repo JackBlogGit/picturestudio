@@ -40,7 +40,7 @@ import {
 import type { MockTemp, MockUser } from './db';
 import { FILES, FOLDERS, LOGS, SETTINGS, SHARE_LINKS, shareExpired, toCsv, folderById } from './tables';
 import type { MockLog } from './tables';
-import { assertAccountCode, capabilitiesFor, fail, int, isTrue, paged, requireLevel, str } from './shared';
+import { assertAccountCode, capabilitiesFor, fail, int, isTrue, paged, requireLevel, requireReauth, str } from './shared';
 import { overriddenCaps } from './policy';
 import type { Actor } from './policy';
 import { adminAlbumList, albumRow } from './album';
@@ -178,7 +178,7 @@ export function listUsers(query: Record<string, unknown> | undefined, actor: Act
 }
 
 export function createUser(body: Record<string, unknown>, actor: Actor): UserRow {
-  const member = requireLevel(actor, 3);
+  const member = requireReauth(requireLevel(actor, 3));
   const username = String(body.username ?? '').trim();
   const nickname = String(body.nickname ?? '').trim();
   const level = Number(body.level ?? Level.Trainee) as UserLevel;
@@ -212,7 +212,7 @@ export function createUser(body: Record<string, unknown>, actor: Actor): UserRow
 }
 
 export function updateUser(id: number, body: Record<string, unknown>, actor: Actor): UserRow {
-  const member = requireLevel(actor, 3);
+  const member = requireReauth(requireLevel(actor, 3));
   const user = USERS.find((u) => u.uid === id);
   if (!user) fail(404, 'NOT_FOUND', '账号不存在');
   assertCanManage(member, user);
@@ -270,7 +270,7 @@ export function updateUser(id: number, body: Record<string, unknown>, actor: Act
 }
 
 export function deleteUser(id: number, actor: Actor): { uid: number; removed: true } {
-  const member = requireLevel(actor, 4);
+  const member = requireReauth(requireLevel(actor, 4));
   const user = USERS.find((u) => u.uid === id);
   if (!user) fail(404, 'NOT_FOUND', '账号不存在');
   if (user.uid === member.uid) fail(409, 'SELF_DELETE', '不能删除当前登录的账号');
@@ -283,7 +283,7 @@ export function deleteUser(id: number, actor: Actor): { uid: number; removed: tr
 }
 
 export function resetPassword(id: number, body: Record<string, unknown>, actor: Actor): { uid: number; reset: true } {
-  requireLevel(actor, 3);
+  requireReauth(requireLevel(actor, 3));
   const user = USERS.find((u) => u.uid === id);
   if (!user) fail(404, 'NOT_FOUND', '账号不存在');
   if (actor.kind === 'member' && actor.level === Level.Admin && user.level > Level.Member) {
@@ -302,7 +302,7 @@ export function resetPassword(id: number, body: Record<string, unknown>, actor: 
  * 免得前端漏传一个就静默留着一条没人认领的授权。
  */
 export function updateUserDriveGrants(id: number, body: Record<string, unknown>, actor: Actor): UserRow {
-  requireLevel(actor, 4);
+  requireReauth(requireLevel(actor, 4));
   const user = USERS.find((u) => u.uid === id);
   if (!user) fail(404, 'NOT_FOUND', '账号不存在');
   const grant: DriveGrant = {
@@ -331,7 +331,7 @@ export function updateUserDriveGrants(id: number, body: Record<string, unknown>,
  * 保留位不能下放，唯一 L4 的 adminConsole / writeSiteSettings 不能关（PRD 6.4）。
  */
 export function updateUserFeatureGrants(id: number, body: Record<string, unknown>, actor: Actor): UserRow {
-  requireLevel(actor, 4);
+  requireReauth(requireLevel(actor, 4));
   const user = USERS.find((u) => u.uid === id);
   if (!user) fail(404, 'NOT_FOUND', '账号不存在');
 
@@ -388,7 +388,7 @@ export function updateUserFeatureGrants(id: number, body: Record<string, unknown
  * 口令只在写入时校验长度，响应与日志都不带它（12.11）。
  */
 export function updateTempCredentials(id: number, body: Record<string, unknown>, actor: Actor): TempRow {
-  requireLevel(actor, 4);
+  requireReauth(requireLevel(actor, 4));
   const temp = TEMPS.find((t) => t.tempId === id);
   if (!temp) fail(404, 'NOT_FOUND', '临时账号不存在');
   const nextCode = str(body.code)?.trim().toUpperCase();
@@ -456,7 +456,7 @@ export function listTemps(query: Record<string, unknown> | undefined, actor: Act
 }
 
 export function createTemp(body: Record<string, unknown>, actor: Actor): TempRow {
-  const member = requireLevel(actor, 3);
+  const member = requireReauth(requireLevel(actor, 3));
   const displayName = String(body.displayName ?? '').trim();
   if (!displayName) fail(400, 'VALIDATION_FAILED', '显示名不能为空');
   const ownerUid = Number(body.ownerUid ?? member.uid);
@@ -481,8 +481,6 @@ export function createTemp(body: Record<string, unknown>, actor: Actor): TempRow
     flags: {
       preview: true,
       download: flags.download === undefined ? true : isTrue(flags.download),
-      uploadImg: isTrue(flags.uploadImg),
-      uploadFile: false,
       editTag: isTrue(flags.editTag),
     },
     albumIds,
@@ -501,16 +499,15 @@ export function createTemp(body: Record<string, unknown>, actor: Actor): TempRow
 }
 
 export function updateTemp(id: number, body: Record<string, unknown>, actor: Actor): TempRow {
-  requireLevel(actor, 3);
+  requireReauth(requireLevel(actor, 3));
   const temp = TEMPS.find((t) => t.tempId === id);
   if (!temp) fail(404, 'NOT_FOUND', '临时账号不存在');
   const flags = body.flags as Partial<TempFlags> | undefined;
   if (flags) {
-    for (const key of ['preview', 'download', 'uploadImg', 'editTag'] as const) {
+    // D27：传图／传文件两开关已作废，写档能力由身份决定，这里只回写剩下的三位
+    for (const key of ['preview', 'download', 'editTag'] as const) {
       if (flags[key] !== undefined) temp.flags[key] = isTrue(flags[key]);
     }
-    // 游客一律不给传文件（网盘上传），强制为 false
-    temp.flags.uploadFile = false;
   }
   if (Array.isArray(body.albumIds)) {
     temp.albumIds = body.albumIds.map(Number).filter((a) => ALBUMS.some((x) => x.id === a));
@@ -533,7 +530,7 @@ export function updateTemp(id: number, body: Record<string, unknown>, actor: Act
 }
 
 export function deleteTemp(id: number, actor: Actor): { tempId: number; removed: true } {
-  requireLevel(actor, 3);
+  requireReauth(requireLevel(actor, 3));
   const temp = TEMPS.find((t) => t.tempId === id);
   if (!temp) fail(404, 'NOT_FOUND', '临时账号不存在');
   // 真接口还要写 Redis 黑名单让在手 JWT 立即失效，这里等价地把它从表里摘掉。
@@ -559,7 +556,7 @@ export function listTags(query: Record<string, unknown> | undefined, actor: Acto
 }
 
 export function createTag(body: Record<string, unknown>, actor: Actor): TagRow {
-  requireLevel(actor, 3);
+  requireReauth(requireLevel(actor, 3));
   const type = String(body.type ?? '');
   const name = String(body.name ?? '').trim();
   if (!['event', 'coser', 'role', 'photographer', 'status'].includes(type)) {
@@ -574,7 +571,7 @@ export function createTag(body: Record<string, unknown>, actor: Actor): TagRow {
 }
 
 export function renameTagRoute(id: number, body: Record<string, unknown>, actor: Actor): TagRow {
-  requireLevel(actor, 3);
+  requireReauth(requireLevel(actor, 3));
   const tag = TAGS.find((t) => t.id === id);
   if (!tag) fail(404, 'NOT_FOUND', '标签不存在');
   const name = String(body.name ?? '').trim();
@@ -588,7 +585,7 @@ export function renameTagRoute(id: number, body: Record<string, unknown>, actor:
 }
 
 export function mergeTags(fromId: number, body: Record<string, unknown>, actor: Actor): { fromId: number; toId: number; moved: number } {
-  requireLevel(actor, 3);
+  requireReauth(requireLevel(actor, 3));
   const from = TAGS.find((t) => t.id === fromId);
   const toId = Number(body.toId);
   const to = TAGS.find((t) => t.id === toId);
@@ -602,7 +599,7 @@ export function mergeTags(fromId: number, body: Record<string, unknown>, actor: 
 }
 
 export function removeTag(id: number, actor: Actor): { id: number; cleaned: number } {
-  requireLevel(actor, 3);
+  requireReauth(requireLevel(actor, 3));
   if (!TAGS.some((t) => t.id === id)) fail(404, 'NOT_FOUND', '标签不存在');
   const cleaned = deleteTag(id);
   writeLog(actor, 'tag_delete', 'tag', id, `detached=${cleaned}`, 1);
@@ -612,17 +609,17 @@ export function removeTag(id: number, actor: Actor): { id: number; cleaned: numb
 // ---------------- 相册功能开关（PRD 6.5，D25） ----------------
 
 /**
- * 超管逐册关掉功能：入参 `caps` 是**整份替换**的「已关闭键」数组（缺省即全开），
+ * 超管逐册关掉功能：入参 `capsOff` 是**整份替换**的「已关闭键」数组（空数组即全开），
  * 与 D21 的按人能力位是两条独立的轴——那一层管这个人能不能做，这一层管这本册让不让做。
  * 只收紧不放宽：这里只能关，没有把等级不允许的动作开到相册上的语义（PRD 6.5）。
  * 未知键一律 400，免得前端拼错一个键名就把一条限制静默丢掉。
  */
 export function updateAlbumCaps(id: number, body: Record<string, unknown>, actor: Actor): AlbumRow {
-  requireLevel(actor, 4);
+  requireReauth(requireLevel(actor, 4));
   const album = ALBUMS.find((a) => a.id === id);
   if (!album) fail(404, 'NOT_FOUND', '相册不存在或无权查看');
-  const raw = Array.isArray(body.caps) ? body.caps : null;
-  if (!raw) fail(400, 'VALIDATION_FAILED', 'caps 必须是开关键数组（整份替换，不传即全部打开）');
+  const raw = Array.isArray(body.capsOff) ? body.capsOff : null;
+  if (!raw) fail(400, 'VALIDATION_FAILED', 'capsOff 必须是开关键数组（整份替换，空数组即全部打开）');
 
   const next: AlbumCapKey[] = [];
   for (const item of raw) {
@@ -758,7 +755,7 @@ function assertSettingValue(key: string, value: string): void {
 
 /** 仅 L4 可写（PRD 6.1「无权限修改核心配置」→ L3 只读）；按键族做类型校验，位置与文案按字符串读 */
 export function updateSettings(body: Record<string, unknown>, actor: Actor): SettingRow[] {
-  requireLevel(actor, 4);
+  requireReauth(requireLevel(actor, 4));
   const patch = (body.settings ?? {}) as Record<string, unknown>;
   // 后端 setMany 是一次批量 save（全成或全不成），这里也先校验完整批再落表
   const checked: [string, string][] = Object.entries(patch).map(([key, raw]) => {

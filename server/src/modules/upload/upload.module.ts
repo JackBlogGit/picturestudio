@@ -1,6 +1,6 @@
 import { Module } from '@nestjs/common';
 import { TypeOrmModule } from '@nestjs/typeorm';
-import { Image, UploadSession } from '../../entities';
+import { Image, TempAccount, UploadSession } from '../../entities';
 import { AlbumModule } from '../album/album.module';
 import { ImageModule } from '../image/image.module';
 import { SettingsModule } from '../settings/settings.module';
@@ -10,7 +10,7 @@ import { UploadService } from './upload.service';
 
 @Module({
   imports: [
-    TypeOrmModule.forFeature([UploadSession, Image]),
+    TypeOrmModule.forFeature([UploadSession, Image, TempAccount]),
     SettingsModule,
     AlbumModule,
     ImageModule,

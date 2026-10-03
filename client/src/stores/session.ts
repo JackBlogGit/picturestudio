@@ -22,8 +22,6 @@ const NO_CAPS: Capabilities = {
 const NO_FLAGS: TempFlags = {
   preview: false,
   download: false,
-  uploadImg: false,
-  uploadFile: false,
   editTag: false,
 };
 
@@ -50,11 +48,11 @@ export const useSessionStore = defineStore('session', () => {
     if (profile.value?.kind === 'user') return profile.value.capabilities;
     if (profile.value?.kind === 'temp') {
       const flags = profile.value.flags;
+      // D27：不给 upload——临时账号只读取图，拍展传图与传文件的入口因此整体消失
       return {
         ...NO_CAPS,
         download: flags.download,
         zip: flags.download,
-        upload: flags.uploadImg,
         editOwn: flags.editTag,
       };
     }
@@ -96,7 +94,9 @@ export const useSessionStore = defineStore('session', () => {
   const visibilityOptions = computed(() => {
     if (profile.value?.kind === 'user') {
       const max = profile.value.level >= UserLevel.SuperAdmin ? 4 : profile.value.level >= UserLevel.Admin ? 3 : 2;
-      return (['public', 'member', 'admin', 'private'] as const).slice(0, max);
+      const tiers = (['public', 'member', 'admin', 'private'] as const).slice(0, max);
+      // 对外发布被按人关掉时，public 连选项都不给（与接口的 SET_PUBLIC_FORBIDDEN 同一把尺子）
+      return profile.value.capabilities.canSetPublic ? tiers : tiers.filter((t) => t !== 'public');
     }
     return ['public'] as const;
   });

@@ -20,6 +20,7 @@ import {
 import { StorageService } from '../../common/storage/storage.service';
 import {
   Album,
+  AlbumStage,
   Image,
   LogTargetType,
   TempAccount,
@@ -28,6 +29,7 @@ import {
   User,
 } from '../../entities';
 import { AuditService, RequestContext } from '../audit/audit.service';
+import { tempGrantIds } from '../../common/permission/temp-grants';
 import { AlbumService } from '../album/album.service';
 import { imageView, ImageView, previewUrl } from '../image/image-shape';
 import { DerivativeService } from '../image/derivative.service';
@@ -46,6 +48,8 @@ export interface UploadSessionView {
   uploadId: string;
   albumId: number;
   filename: string;
+  /** 本批图片的阶段（D31）；null = 建会话时没选，落库后由所属相册兜住 */
+  stage: AlbumStage | null;
   size: number;
   chunkSize: number;
   totalChunks: number;
@@ -59,10 +63,16 @@ interface QuotaSubject {
   id: number;
 }
 
-interface OwnerRef {
-  kind: 'user' | 'temp';
-  uid: number;
-  tempId: number | null;
+/**
+ * 一条会话的落库归属（PRD 6.2 / 6.3）：D27 之后拍展传图只能由成员发起并点名工单，
+ * 所以「图记在谁名下、配额扣谁的头」只能问会话，不能再从操作者身份推断。
+ */
+interface Delivery {
+  /** 图片署名成员 = 被点名工单的创建者 */
+  uploadUid: number;
+  /** 点名交付的临时账号（= images.upload_temp_id） */
+  tempId: number;
+  quota: QuotaSubject;
 }
 
 /** uploaded_chunks 存逗号分隔下标；脏值一律忽略，宁可当成没传过 */
@@ -100,6 +110,7 @@ export class UploadService {
   constructor(
     @InjectRepository(UploadSession) private readonly sessions: Repository<UploadSession>,
     @InjectRepository(Image) private readonly images: Repository<Image>,
+    @InjectRepository(TempAccount) private readonly temps: Repository<TempAccount>,
     private readonly dataSource: DataSource,
     private readonly storage: StorageService,
     private readonly fileKind: FileKindService,
@@ -180,7 +191,14 @@ export class UploadService {
       );
     }
     const session = await this.openSession(
-      { albumId: dto.albumId, filename: dto.filename, fileSize: body.length, md5Client: dto.md5Client },
+      {
+        albumId: dto.albumId,
+        filename: dto.filename,
+        fileSize: body.length,
+        md5Client: dto.md5Client,
+        tempId: dto.tempId,
+        stage: dto.stage,
+      },
       actor,
     );
     await this.storage.write(chunkKey(session.uploadId, 0), body);
@@ -211,6 +229,7 @@ export class UploadService {
 
   private async openSession(dto: CreateUploadDto, actor: Actor): Promise<UploadSession> {
     const album = await this.authorizeTarget(dto.albumId, actor);
+    const delivery = await this.resolveDelivery(dto, album);
     const size = Math.trunc(dto.fileSize);
     const max = this.settings.getNumber('upload.max_image_size', 50 * 1024 * 1024);
     if (size > max) {
@@ -224,10 +243,9 @@ export class UploadService {
       size,
       this.settings.getNumber('upload.chunk_size', 5 * 1024 * 1024),
     );
-    await this.assertQuota(actor, size);
+    await this.bumpQuota(this.dataSource.manager, delivery.quota, size, false);
 
     const md5Client = (dto.md5Client ?? '').toLowerCase();
-    const owner = this.ownerOf(actor);
     return this.sessions.save(
       this.sessions.create({
         uploadId: newUploadId(),
@@ -235,18 +253,53 @@ export class UploadService {
         albumId: album.id,
         folderId: null,
         filename: dto.filename.trim().slice(0, 255),
+        stage: dto.stage ?? null,
         fileSize: String(size),
         chunkSize,
         totalChunks,
         uploadedChunks: '',
         md5Client: MD5_HEX.test(md5Client) ? md5Client : '',
-        userType: owner.kind,
-        uid: owner.kind === 'user' ? owner.uid : null,
-        tempId: owner.kind === 'temp' ? owner.tempId : null,
+        /** 会话本身仍归发起的成员：断点续传与取消只认建会话的那个人（tempId 管的是图的归属，不是会话的归属） */
+        userType: 'user',
+        uid: actor.kind === ActorKind.Member ? actor.uid : null,
+        tempId: delivery.tempId,
         status: 0,
         expireTime: new Date(Date.now() + SESSION_TTL_MS),
       }),
     );
+  }
+
+  /**
+   * 点名交付的工单（D27：拍展传图一律由正式成员发起并指定交给哪位临时账号）。
+   * 判定顺序照已验收的前端内核：先要 tempId，再查账号，最后查相册白名单。
+   * 已销毁或已过期的工单一律按「不存在」回，不给新图落进一个取不到的账号头上。
+   */
+  private async resolveDelivery(dto: CreateUploadDto, album: Album): Promise<Delivery> {
+    const raw = dto.tempId;
+    if (raw === undefined || !Number.isInteger(raw) || raw <= 0) {
+      throw new AppError(
+        HttpStatus.BAD_REQUEST,
+        'VALIDATION_FAILED',
+        '拍展传图必须指定要交付给哪个临时账号',
+      );
+    }
+    const temp = await this.temps.findOne({ where: { id: raw } });
+    if (!temp || temp.disabled === 1 || new Date(temp.expireTime).getTime() < Date.now()) {
+      throw new AppError(HttpStatus.NOT_FOUND, 'TEMP_NOT_FOUND', '指定的临时账号不存在');
+    }
+    const { albumIds } = await tempGrantIds(this.temps.manager, temp.id);
+    if (!albumIds.includes(album.id)) {
+      throw new AppError(
+        HttpStatus.FORBIDDEN,
+        'NOT_IN_WHITELIST',
+        `相册「${album.name}」不在临时账号 ${temp.accountNo} 的授权范围内`,
+      );
+    }
+    return {
+      uploadUid: temp.ownerUid,
+      tempId: temp.id,
+      quota: { kind: 'temp', id: temp.id },
+    };
   }
 
   private async finalize(
@@ -313,9 +366,9 @@ export class UploadService {
       throw err;
     }
 
-    const owner = this.ownerOf(actor);
+    const delivery = await this.deliveryOf(session);
     const dup = await this.images.findOne({
-      where: { md5, uploadUid: owner.uid },
+      where: { md5, uploadUid: delivery.uploadUid },
       select: { id: true, originalPath: true, albumId: true },
     });
     if (dup && !dto.force) {
@@ -348,7 +401,7 @@ export class UploadService {
 
     let image: Image;
     try {
-      image = await this.persistWithQuota(album, owner, originalPath, md5, size, session.filename);
+      image = await this.persistWithQuota(album, delivery, originalPath, md5, size, session);
     } catch (err) {
       if (!dup) await this.storage.remove(originalPath);
       throw err;
@@ -363,24 +416,20 @@ export class UploadService {
       targetId: image.id,
       detail: `${session.filename}, size=${size}, md5=${md5}, type=${kind.ext}, album=${album.id}${dup ? ', force=1' : ''}`,
     });
-    return imageView(image, actor, { original: actor.kind === ActorKind.Member });
+    return imageView(image, actor, { albumStage: album.stage });
   }
 
   /** 配额与图片记录必须同事务，否则 used_space 会与真实占用漂移（PRD 5.6） */
   private async persistWithQuota(
     album: Album,
-    owner: OwnerRef,
+    delivery: Delivery,
     originalPath: string,
     md5: string,
     size: number,
-    filename: string,
+    session: UploadSession,
   ): Promise<Image> {
-    const subject: QuotaSubject =
-      owner.kind === 'user'
-        ? { kind: 'user', id: owner.uid }
-        : { kind: 'temp', id: (owner.tempId as number) };
     return this.dataSource.transaction(async (em) => {
-      await this.bumpQuota(em, subject, size, true);
+      await this.bumpQuota(em, delivery.quota, size, true);
       const repo = em.getRepository(Image);
       return repo.save(
         repo.create({
@@ -388,7 +437,7 @@ export class UploadService {
           originalPath,
           previewPath: '',
           thumbPath: '',
-          filename,
+          filename: session.filename,
           fileSize: String(size),
           md5,
           width: 0,
@@ -398,11 +447,21 @@ export class UploadService {
           // 新图直接继承相册档位，绝不上浮（PRD 3.2）
           visibility: album.visibility,
           sort: 0,
-          uploadUid: owner.uid,
-          uploadTempId: owner.kind === 'temp' ? owner.tempId : null,
+          // 阶段随这一张走（D31）；null 由投影层回落到 albums.stage
+          imgStage: session.stage ?? null,
+          uploadUid: delivery.uploadUid,
+          uploadTempId: delivery.tempId,
         }),
       );
     });
+  }
+
+  /**
+   * 行锁只在支持的驱动上开：开发库 better-sqlite3 没有 SELECT ... FOR UPDATE，
+   * 带上锁选项是整条落库直接 500，而不是少一把锁（它的写入本就串行，不会读到脏配额）。
+   */
+  private get lockable(): boolean {
+    return String(this.dataSource.options.type) !== 'better-sqlite3';
   }
 
   private async bumpQuota(em: EntityManager, subject: QuotaSubject, size: number, lock: boolean): Promise<void> {
@@ -411,7 +470,7 @@ export class UploadService {
     );
     const row = await repo.findOne({
       where: { id: subject.id },
-      ...(lock ? { lock: { mode: 'pessimistic_write' as const } } : {}),
+      ...(lock && this.lockable ? { lock: { mode: 'pessimistic_write' as const } } : {}),
     });
     if (!row) throw new AppError(HttpStatus.NOT_FOUND, 'NOT_FOUND', '归属账号不存在或已被删除');
     const used = Number(row.usedSpace ?? 0);
@@ -426,13 +485,21 @@ export class UploadService {
     if (lock) await repo.update({ id: subject.id }, { usedSpace: String(used + size) });
   }
 
-  private async assertQuota(actor: Actor, size: number): Promise<void> {
-    const owner = this.ownerOf(actor);
-    const subject: QuotaSubject =
-      owner.kind === 'user'
-        ? { kind: 'user', id: owner.uid }
-        : { kind: 'temp', id: (owner.tempId as number) };
-    await this.bumpQuota(this.dataSource.manager, subject, size, false);
+  /**
+   * 会话 → 落库归属：complete 可能在建会话几小时之后才发生，工单这期间可能已被销毁，
+   * 所以这里重新查一次，查不到就直接失败，绝不悄悄改记到上传者头上（PRD 6.2）。
+   */
+  private async deliveryOf(session: UploadSession): Promise<Delivery> {
+    if (!session.tempId) {
+      throw new AppError(HttpStatus.CONFLICT, 'TEMP_NOT_FOUND', '该上传会话没有指定交付对象，无法入库');
+    }
+    const temp = await this.temps.findOne({ where: { id: session.tempId } });
+    if (!temp) throw new AppError(HttpStatus.NOT_FOUND, 'TEMP_NOT_FOUND', '交付的临时账号已不存在');
+    return {
+      uploadUid: temp.ownerUid,
+      tempId: temp.id,
+      quota: { kind: 'temp', id: temp.id },
+    };
   }
 
   private async attachDerivatives(image: Image): Promise<void> {
@@ -491,20 +558,8 @@ export class UploadService {
   }
 
   private owns(session: UploadSession, actor: Actor): boolean {
-    if (actor.kind === ActorKind.Member) {
-      return session.userType === 'user' && session.uid === actor.uid;
-    }
-    if (actor.kind === ActorKind.Temp) {
-      return session.userType === 'temp' && session.tempId === actor.tempId;
-    }
-    return false;
-  }
-
-  private ownerOf(actor: Actor): OwnerRef {
-    if (actor.kind === ActorKind.Member) return { kind: 'user', uid: actor.uid, tempId: null };
-    // 临时账号上传的资源自动归属工作室（PRD 6.2），配额算在临时账号自己头上
-    if (actor.kind === ActorKind.Temp) return { kind: 'temp', uid: actor.ownerUid, tempId: actor.tempId };
-    throw new AppError(HttpStatus.FORBIDDEN, 'UPLOAD_FORBIDDEN', '该身份不能上传');
+    /** D27 之后临时账号一条会话都建不出来，会话归属只剩成员这一支 */
+    return actor.kind === ActorKind.Member && session.userType === 'user' && session.uid === actor.uid;
   }
 
   private async missingChunks(session: UploadSession): Promise<number[]> {
@@ -529,6 +584,7 @@ export class UploadService {
       uploadId: session.uploadId,
       albumId: Number(session.albumId),
       filename: session.filename,
+      stage: session.stage ?? null,
       size: Number(session.fileSize),
       chunkSize: session.chunkSize,
       totalChunks: session.totalChunks,

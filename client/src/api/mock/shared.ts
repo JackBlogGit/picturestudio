@@ -2,7 +2,7 @@
  * mock 各接口模块共用的身份解析、投影与判定：handler / share / drive / admin 都从这里取，
  * 免得同一套档位裁剪口径在四个文件里各写一遍。行为对齐后端 service 层。
  */
-import type { AlbumCapsView, AlbumCapKey, AlbumView, ImageView, Page, RejectedItem, TagView } from '@/types/api';
+import type { AlbumCapsView, AlbumCapKey, AlbumStage, AlbumView, ImageView, Page, RejectedItem, TagView } from '@/types/api';
 import { UserLevel } from '@/types/api';
 import { ApiError } from '../error';
 import { getAccessToken } from '../token';
@@ -33,6 +33,8 @@ export function currentActor(): Actor {
   if (parsed[1] === 'user') {
     const user = USERS.find((u) => u.uid === Number(parsed[2]));
     if (!user) return { kind: 'guest' };
+    // 禁用当场作废旧令牌，不是只挡下一次登录
+    if (user.disabled) fail(401, 'ACCOUNT_DISABLED', '该账号已被禁用，请联系超级管理员');
     return memberActorOf({
       uid: user.uid,
       username: user.username,
@@ -43,6 +45,10 @@ export function currentActor(): Actor {
   }
   const temp = TEMPS.find((t) => t.tempId === Number(parsed[2]));
   if (!temp) fail(401, 'TEMP_NOT_FOUND', '临时账号不存在');
+  // 到期是每次请求复校，不是只在签发时查一次（PRD 12.6）：令牌不记到期，直切身份也绕不过
+  if (Date.parse(temp.expiresAt) <= Date.now()) {
+    fail(401, 'TEMP_EXPIRED', '该帐户ID已到期，请联系派发人重新开具');
+  }
   return {
     kind: 'temp',
     tempId: temp.tempId,
@@ -68,6 +74,46 @@ export function requireLevel(actor: Actor, min: UserLevel): MemberActor {
   if (member.level < min || !requiredCap) {
     fail(403, 'LEVEL_FORBIDDEN', `需要 L${min} 及以上等级与对应的能力位`);
   }
+  return member;
+}
+
+/** 演示层成员账号共用的缺省口令，改过密码的账号读自己的 password 列 */
+export const DEMO_PASSWORD = 'demo1234';
+
+/**
+ * 本次请求带来的身份再验证口令（PRD 6.1 / D34）。
+ * handleMock 每次分发前塞进来，只在同一次同步分发里存活，不进任何浏览器存储。
+ */
+let reauthPassword = '';
+
+export function stashReauth(value: string | undefined): void {
+  reauthPassword = value ?? '';
+}
+
+export function peekReauth(): string {
+  return reauthPassword;
+}
+
+function memberPassword(uid: number): string {
+  return USERS.find((u) => u.uid === uid)?.password ?? DEMO_PASSWORD;
+}
+
+/** 口令比对：mock 存明文，真接口比 bcrypt 摘要，错误码与文案两边一致 */
+export function assertReauthPassword(member: MemberActor, password: string): void {
+  if (!password) {
+    fail(401, 'REAUTH_REQUIRED', '后台的改动需要再验证一次身份，请填写当前账号的登录口令');
+  }
+  if (password !== memberPassword(member.uid)) {
+    fail(401, 'REAUTH_FAILED', '登录口令不正确，改动没有提交');
+  }
+}
+
+/**
+ * 后台写操作的身份再验证。写成 requireReauth(requireLevel(actor, n)) 一行的样子，
+ * 是为了让越权仍然先吃 403——等级都不够的人不该知道自己差一个口令。
+ */
+export function requireReauth(member: MemberActor): MemberActor {
+  assertReauthPassword(member, reauthPassword);
   return member;
 }
 
@@ -147,6 +193,14 @@ export function md5Of(id: number): string {
   return out.slice(0, 32);
 }
 
+/**
+ * 一张图的阶段（D31）：上传时选过就以图自己那列为准；没标过的历史图回落到所属相册的阶段
+ * （相册本来就分「前期册 / 后期册」）。这条回落不是漏做，而是 D31 之前的行根本没有这一列。
+ */
+export function imageStage(seed: ImageSeed): AlbumStage {
+  return seed.stage ?? albumById(seed.albumId)?.stage ?? 'post';
+}
+
 /** 响应体不出磁盘路径；原图链接只发给成员（PRD 12.3 / 12.8） */
 export function toView(seed: ImageSeed, actor: Actor): ImageView {
   const anon = actor.kind === 'guest' || actor.kind === 'share';
@@ -169,6 +223,7 @@ export function toView(seed: ImageSeed, actor: Actor): ImageView {
     watermarked: (album?.visibility === 'public' ? 1 : 0) as 0 | 1,
     visibility: seed.visibility,
     sort: seed.sort,
+    stage: imageStage(seed),
     uploadUid: anon ? null : seed.uploaderUid,
     uploadTempId: anon ? null : seed.uploaderTempId,
     tags,
@@ -223,13 +278,12 @@ export function listableAlbums(actor: Actor): AlbumView[] {
     return ALBUMS.filter((a) => a.parentId === null && a.visibility === 'public' && a.status !== 2);
   }
   if (actor.kind === 'temp') {
-    // 临时账号仅能看到白名单中且 visibility === 'public' 的顶级相册
+    // 白名单即授权，可覆盖档位（PRD 6.2）：这里只复查顶级册、状态与册级 tempAccess 开关
     // D25：本册关掉「临时账号访问」时整本从列表消失——闸门口径要和 decideTemp 的 404 一致，不能列表可见、点进 404
     return ALBUMS.filter(
       (a) =>
         a.parentId === null &&
         actor.albumIds.includes(a.id) &&
-        a.visibility === 'public' &&
         a.status !== 2 &&
         !closedAlbumCaps(a).includes('tempAccess'),
     );

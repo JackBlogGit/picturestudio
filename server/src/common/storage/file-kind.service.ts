@@ -12,6 +12,64 @@ export interface FileKind {
 const PROBE_BYTES = 65536;
 
 /**
+ * PRD 5.2 的三张名单缺省值，与 `sql/schema.sql` 结尾的 site_settings 种子逐字一致。
+ * 之所以要在代码里也放一份：SQLite 开发库走 synchronize 建表，不会跑 schema.sql 里那段
+ * INSERT 种子，缺键时若兜成空数组，白名单为空 ⇒ 每一次上传都死在误导性的「不支持的扩展名」。
+ * 管理员真的把某条配置存成空数组时，getJson 拿到的就是空数组，这份缺省不会盖掉它。
+ */
+const DEFAULT_IMAGE_EXTENSIONS = [
+  'jpg',
+  'jpeg',
+  'png',
+  'webp',
+  'heic',
+  'tif',
+  'tiff',
+  'raw',
+  'cr2',
+  'nef',
+  'arw',
+];
+
+const DEFAULT_FILE_EXTENSIONS = [
+  'jpg',
+  'jpeg',
+  'png',
+  'webp',
+  'pdf',
+  'doc',
+  'docx',
+  'xls',
+  'xlsx',
+  'ppt',
+  'pptx',
+  'psd',
+  'ai',
+  'zip',
+  '7z',
+  'rar',
+  'mp4',
+  'mov',
+  'preset',
+  'xmp',
+];
+
+const DEFAULT_BLOCKED_EXTENSIONS = [
+  'exe',
+  'bat',
+  'cmd',
+  'sh',
+  'msi',
+  'dll',
+  'apk',
+  'jar',
+  'js',
+  'vbs',
+  'ps1',
+  'scr',
+];
+
+/**
  * PRD 12.4：真实类型判定不信任扩展名，也不信任客户端 Content-Type。
  * 白名单来自站点配置，黑名单无条件拒绝，落库的 mimeType 一定是这里校验后的值。
  */
@@ -41,8 +99,11 @@ export class FileKindService {
    */
   async assertAllowed(scope: 'image' | 'file', buffer: Buffer, filename: string): Promise<FileKind> {
     const whitelistKey = scope === 'image' ? 'upload.image_extensions' : 'upload.file_extensions';
-    const whitelist = this.list(whitelistKey, []);
-    const blacklist = this.list('upload.blocked_extensions', []);
+    const whitelist = this.list(
+      whitelistKey,
+      scope === 'image' ? DEFAULT_IMAGE_EXTENSIONS : DEFAULT_FILE_EXTENSIONS,
+    );
+    const blacklist = this.list('upload.blocked_extensions', DEFAULT_BLOCKED_EXTENSIONS);
     const client = this.clientExt(filename);
 
     if (blacklist.includes(client)) {

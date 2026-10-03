@@ -8,6 +8,27 @@
  *
  * 超管按 D19/D1 能进他人的空间，但那里只有一列容量数字和删除按钮：
  * 文件名密文与密文字节都不下发，免得档位给的删除权被顺手扩成离线爆破口令的素材。
+ *
+ * 关联：入口是首页宫格「加密文件」格（`config/workbench.ts` 的 `encrypted`）→ 路由 `/drive/encrypted`，
+ * 准入只写在 router 的 `meta.auth + meta.member` 上（游客 401 / 临时账号 403），本页不再自己判身份等级；
+ * 谁能看哪一列由接口层决定（`api/mock/vault.ts` 的 `targetOf` / `viewOf`），页面只渲染收到的字段。
+ * 身份与配额来自 `stores/session`，传输全部走 `api/vault.ts`，密码学全部走 `utils/crypto.ts`。
+ *
+ * 两条下载通道（D29）：**下载加密文件**保存未解密的密文容器，文件名是原名后加 `.BEKER`
+ * （`摊位合同.pdf` → `摊位合同.pdf.BEKER`），换设备、异地备份走这一条，凭口令还能「解密下载」还原；
+ * **解密下载**在本地解开后按原名落盘，明文从不经服务端。两条都在传输队列里报真实进度。
+ *
+ * 本地加解密（D30）：「加密」「解密」这对按钮**不碰空间也不碰接口**——选本地文件 → 用内存里那把密钥封/解 →
+ * 结果直接交给浏览器落盘，条目数、密文体积与配额一位不动。产物与「下载加密文件」逐字节同形，可以互相搬运；
+ * 用的仍是本空间那一个口令，所以锁定之后这对按钮没有密钥可用，也不在这里另设第二个口令框。
+ *
+ * 注意：① 密钥与解出的文件名只存组件内存，`onBeforeUnmount` 一律清掉，**不要**为了「刷新后省事」
+ * 把它们写进任何浏览器存储；② mock 的库存在模块内存里，整页刷新连演示数据一起重置（全站既有行为），
+ * 所以「锁定后重新解锁」用页面自己的锁定按钮测，不要拿刷新当用例；③ 他人空间是**只读容量视图**，
+ * 不渲染上传表单、解锁卡与拖放区——藏表单不算闸门，真正的拒绝在接口层；④ 样式自持一份 `pk-vault__*`，
+ * 刻意不复用也不外泄 `.pk-tab` / `.pk-queue` / `.pk-task`（那些是网盘页的既有骨架）；
+ * ⑤ 传输队列的标题与说明**不叫** `.pk-vault__title` / `.pk-vault__lede`——那两个类在页内被当成
+ * 「当前处于哪一张卡」的读数用（向导 / 解锁 / 我的密文 / 只读容量视图），队列一插进去就会把它们顶掉。
  */
 import { computed, onBeforeUnmount, onMounted, reactive, ref, watch } from 'vue';
 import { useRoute, useRouter } from 'vue-router';
@@ -31,6 +52,11 @@ import { formatBytes, formatDate, percent } from '@/utils/format';
 import {
   bytesToB64,
   checkVerifier,
+  CIPHER_EXT,
+  cipherFileName,
+  CONTAINER_OVERHEAD,
+  CONTAINER_VERSION,
+  decipherFileName,
   decryptBytes,
   decryptName,
   deriveVaultKey,
@@ -65,10 +91,113 @@ const panel = ref<'space' | 'spaces'>('space');
 const dragOver = ref(false);
 
 const fileInput = ref<HTMLInputElement | null>(null);
+const localEncryptInput = ref<HTMLInputElement | null>(null);
+const localDecryptInput = ref<HTMLInputElement | null>(null);
 const unlockPass = ref('');
 
 const setup = reactive({ pass: '', confirm: '', hint: '', agree: false, busy: false });
 const rekey = reactive({ open: false, next: '', confirm: '', hint: '', busy: false });
+
+/**
+ * 传输队列：加密上传、两种下载与本地加解密共用一份，每行一个阶段化进度条
+ * （D29「可以看下载进度」、D30「加密／解密按钮」）。
+ * 阶段区间是**权重**而不是估算——`读取中` 那一段按真实到手字节走，`加密中` 只有一次
+ * WebCrypto 调用、跑完才跳到位，所以条子会停在区间起点等它返回，不会假装在推进。
+ */
+type TransferKind = 'encrypt' | 'cipher' | 'plain' | 'local-encrypt' | 'local-decrypt';
+type TransferState = '排队' | '读取中' | '加密中' | '提交中' | '取回中' | '解密中' | '已完成' | '失败';
+
+interface TransferTask {
+  key: number;
+  kind: TransferKind;
+  /** 展示名：加密任务是原文件名，下载与本地任务是**落盘文件名**（密文那条带 .BEKER） */
+  label: string;
+  state: TransferState;
+  progress: number;
+  detail: string;
+}
+
+const STAGE_BANDS: Record<TransferKind, Partial<Record<TransferState, [number, number]>>> = {
+  encrypt: { 读取中: [0, 55], 加密中: [55, 85], 提交中: [85, 99] },
+  cipher: { 取回中: [0, 99] },
+  plain: { 取回中: [0, 60], 解密中: [60, 99] },
+  'local-encrypt': { 读取中: [0, 60], 加密中: [60, 99] },
+  'local-decrypt': { 读取中: [0, 60], 解密中: [60, 99] },
+};
+
+const tasks = ref<TransferTask[]>([]);
+let taskSeq = 0;
+
+const activeTasks = computed(() => tasks.value.filter((item) => item.state !== '已完成' && item.state !== '失败'));
+const doneTasks = computed(() => tasks.value.filter((item) => item.state === '已完成' || item.state === '失败'));
+/** 有任务在跑就不许销毁／删除：中途掉一条密文会让「整空间重封」的条数校验对不上 */
+const transferring = computed(() => activeTasks.value.length > 0);
+
+function newTask(kind: TransferKind, label: string): TransferTask {
+  tasks.value = [...tasks.value, { key: (taskSeq += 1), kind, label, state: '排队', progress: 0, detail: '' }];
+  return tasks.value[tasks.value.length - 1];
+}
+
+function setStage(task: TransferTask, state: TransferState, frac = 0): void {
+  task.state = state;
+  const band = STAGE_BANDS[task.kind][state];
+  if (!band) return;
+  const clamped = Math.min(1, Math.max(0, frac));
+  const next = Math.round(band[0] + (band[1] - band[0]) * clamped);
+  if (next > task.progress) task.progress = next;
+}
+
+function finishTask(task: TransferTask, detail: string): void {
+  task.state = '已完成';
+  task.progress = 100;
+  task.detail = detail;
+}
+
+function failTask(task: TransferTask, detail: string): void {
+  task.state = '失败';
+  task.detail = detail;
+}
+
+function clearDone(): void {
+  tasks.value = activeTasks.value;
+}
+
+/** 让出一帧：进度条要的是浏览器有机会画，不是等真的空闲 */
+function yieldToUi(): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, 0));
+}
+
+/** 分块读本地文件：整块 arrayBuffer() 没有中间态，大文件只能看到 0% 直接跳 100% */
+async function readBytes(file: File, onLoaded: (loaded: number) => void): Promise<Uint8Array> {
+  const reader = file.stream().getReader();
+  const parts: Uint8Array[] = [];
+  let loaded = 0;
+  for (;;) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    if (!value) continue;
+    parts.push(value);
+    loaded += value.length;
+    onLoaded(loaded);
+  }
+  const out = new Uint8Array(loaded);
+  let offset = 0;
+  for (const part of parts) {
+    out.set(part, offset);
+    offset += part.length;
+  }
+  return out;
+}
+
+/** 落盘：object URL 延迟释放，同步 revoke 会赶上下载任务、个别内核版本直接把它取消掉 */
+function saveToDisk(bytes: Uint8Array, fileName: string, mimeType: string): void {
+  const url = URL.createObjectURL(new Blob([bytes as BlobPart], { type: mimeType }));
+  const link = document.createElement('a');
+  link.href = url;
+  link.download = fileName;
+  link.click();
+  window.setTimeout(() => URL.revokeObjectURL(url), 4000);
+}
 
 const myUid = computed(() => (session.profile?.kind === 'user' ? session.profile.uid : 0));
 const isSuper = computed(() => session.level >= UserLevel.SuperAdmin);
@@ -85,6 +214,17 @@ const ownedSpaces = computed(() => spaces.value.filter((item) => item.uid !== my
 function displayName(row: VaultFileView): string {
   if (!row.nameCipher) return '密文文件名（仅本人可解）';
   return names.value[row.id] ?? '（未解锁）';
+}
+
+/** 解得出的原名才有落盘名：他人空间不下发文件名密文，锁定态也没有密钥可解 */
+function resolvedName(row: VaultFileView): string | null {
+  return row.nameCipher ? names.value[row.id] ?? null : null;
+}
+
+/** `原名.pdf` → `原名.pdf.BEKER`，即「下载加密文件」那一条存下来的文件名 */
+function cipherNameOf(row: VaultFileView): string | null {
+  const plain = resolvedName(row);
+  return plain ? cipherFileName(plain) : null;
 }
 
 /** 锁定态解不出文件名，图标只能退到 MIME 短标签；解锁后一律用真扩展名 */
@@ -286,13 +426,16 @@ async function uploadFiles(picked: File[]): Promise<void> {
     ElMessage.warning('请先解锁自己的空间');
     return;
   }
-  busy.value = true;
-  try {
-    for (let i = 0; i < picked.length; i += 1) {
-      const file = picked[i];
-      progress.value = `加密中 ${i + 1}/${picked.length}：${file.name}`;
-      const bytes = new Uint8Array(await file.arrayBuffer());
+  let ok = 0;
+  let rejected = 0;
+  for (const file of picked) {
+    const task = newTask('encrypt', file.name);
+    try {
+      const bytes = await readBytes(file, (loaded) => setStage(task, '读取中', loaded / Math.max(1, file.size)));
+      setStage(task, '加密中');
+      await yieldToUi();
       const cipher = await encryptBytes(current, bytes);
+      setStage(task, '提交中');
       const dot = file.name.lastIndexOf('.');
       await vaultPutFile(
         {
@@ -303,43 +446,158 @@ async function uploadFiles(picked: File[]): Promise<void> {
         },
         cipher,
       );
+      finishTask(task, `已入库 · 容器 ${formatBytes(cipher.length)} = 明文 ${formatBytes(file.size)} + ${CONTAINER_OVERHEAD} 字节开销`);
+      ok += 1;
+    } catch (err) {
+      const reason = errorText(err);
+      failTask(task, reason);
+      ElMessage.error(reason);
+      rejected += 1;
     }
-    await load();
-    ElMessage.success(`已加密提交 ${picked.length} 个文件`);
+  }
+  await load();
+  if (!ok) return;
+  ElMessage.success(rejected ? `${ok} 个已加密提交，${rejected} 个被拒，原因见传输进度` : `${ok} 个文件已加密提交，下载时的后缀为 .${CIPHER_EXT}`);
+}
+
+/**
+ * 下载 = 取回密文 → 按需本地解密 → 落盘。
+ * `cipher` 保存的是**未解密**的容器，文件名为 `原名.BEKER`（异地备份、换设备用这一条）；
+ * `plain` 在本地解开后按原名落盘，明文从不经服务端。两条的进度都出自同一份队列。
+ */
+async function download(row: VaultFileView, mode: 'cipher' | 'plain'): Promise<void> {
+  const current = key.value;
+  const plainName = resolvedName(row);
+  if (!current || !plainName || !row.links.cipher) {
+    ElMessage.warning('请先解锁自己的空间');
+    return;
+  }
+  const bakerName = cipherFileName(plainName);
+  const task = newTask(mode, mode === 'cipher' ? bakerName : plainName);
+  try {
+    const cipher = await vaultGetCipher(row, (loaded, total) =>
+      setStage(task, '取回中', loaded / (total || row.size || 1)),
+    );
+    let bytes = cipher;
+    let fileName = bakerName;
+    let mimeType = 'application/octet-stream';
+    if (mode === 'plain') {
+      setStage(task, '解密中');
+      await yieldToUi();
+      bytes = await decryptBytes(current, cipher);
+      if (bytes.length !== row.plainSize) {
+        ElMessage.warning(`解出 ${bytes.length} 字节，与登记的明文体积 ${row.plainSize} 不符`);
+      }
+      fileName = plainName;
+      mimeType = row.mimeType || 'application/octet-stream';
+    }
+    saveToDisk(bytes, fileName, mimeType);
+    finishTask(
+      task,
+      mode === 'cipher'
+        ? `密文容器已落盘（未解密）· ${formatBytes(bytes.length)}`
+        : `明文已还原 · ${formatBytes(bytes.length)}`,
+    );
   } catch (err) {
+    failTask(task, errorText(err));
     ElMessage.error(errorText(err));
-    await reload();
-  } finally {
-    busy.value = false;
-    progress.value = '';
   }
 }
 
-/** 下载 = 取回密文 → 本地解密 → 用解出的文件名落盘，明文从不经服务端 */
-async function download(row: VaultFileView): Promise<void> {
+/**
+ * 本地加解密（D30）：「加密」与「解密」这对按钮只在浏览器里做事——选本地文件 → 用内存里
+ * 那把本空间的密钥封/解 → 直接把结果交给浏览器落盘。**不上传、不入库、不占配额、不动条目数**，
+ * 也不经任何接口，所以 5.2 黑名单、配额这些服务端闸门在这儿一道都不会触发。
+ * 产出的容器与「下载加密文件」逐字节同形，两边可以互相搬运。
+ */
+function pickLocal(mode: 'encrypt' | 'decrypt'): void {
+  if (mode === 'encrypt') localEncryptInput.value?.click();
+  else localDecryptInput.value?.click();
+}
+
+function onLocalPick(event: Event, mode: 'encrypt' | 'decrypt'): void {
+  const input = event.target as HTMLInputElement;
+  const picked = Array.from(input.files ?? []);
+  input.value = '';
+  if (!picked.length) return;
+  void (mode === 'encrypt' ? encryptLocal(picked) : decryptLocal(picked));
+}
+
+/** 密钥就是空间那把：锁定之后没有密钥可取，这里直接拒，不另设第二个口令框 */
+function requireLocalKey(): VaultKey | null {
   const current = key.value;
-  if (!current) return;
-  busy.value = true;
-  progress.value = `解密中 ${displayName(row)}`;
-  try {
-    const cipher = await vaultGetCipher(row);
-    const plain = await decryptBytes(current, cipher);
-    if (plain.length !== row.plainSize) {
-      ElMessage.warning(`解出 ${plain.length} 字节，与登记的明文体积 ${row.plainSize} 不符`);
-    }
-    const url = URL.createObjectURL(new Blob([plain as BlobPart], { type: row.mimeType || 'application/octet-stream' }));
-    const link = document.createElement('a');
-    link.href = url;
-    link.download = displayName(row);
-    link.click();
-    // 同步 revoke 会赶上浏览器的下载任务，个别内核版本直接把它取消掉
-    window.setTimeout(() => URL.revokeObjectURL(url), 4000);
-  } catch (err) {
-    ElMessage.error(errorText(err));
-  } finally {
-    busy.value = false;
-    progress.value = '';
+  if (!current || viewingOther.value) {
+    ElMessage.warning('请先解锁自己的空间：这对按钮用的就是本空间口令派生出的那把密钥');
+    return null;
   }
+  return current;
+}
+
+async function encryptLocal(picked: File[]): Promise<void> {
+  const current = requireLocalKey();
+  if (!current) return;
+  let ok = 0;
+  for (const file of picked) {
+    const bakerName = cipherFileName(file.name);
+    const task = newTask('local-encrypt', bakerName);
+    try {
+      const bytes = await readBytes(file, (loaded) => setStage(task, '读取中', loaded / Math.max(1, file.size)));
+      setStage(task, '加密中');
+      await yieldToUi();
+      const cipher = await encryptBytes(current, bytes);
+      saveToDisk(cipher, bakerName, 'application/octet-stream');
+      finishTask(
+        task,
+        `已本地加密落盘（未上传）· 容器 ${formatBytes(cipher.length)} = 明文 ${formatBytes(file.size)} + ${CONTAINER_OVERHEAD} 字节开销`,
+      );
+      ok += 1;
+    } catch (err) {
+      failTask(task, errorText(err));
+      ElMessage.error(errorText(err));
+    }
+  }
+  if (ok) ElMessage.success(`${ok} 个文件已加密为 .${CIPHER_EXT} 并落盘，没有上传到空间`);
+}
+
+async function decryptLocal(picked: File[]): Promise<void> {
+  const current = requireLocalKey();
+  if (!current) return;
+  let ok = 0;
+  for (const file of picked) {
+    // 容器里不存文件名，落盘名只能从 .BEKER 后缀还原；没带后缀的按原名写回，能不能解开由 GCM 说了算
+    const outName = decipherFileName(file.name);
+    const task = newTask('local-decrypt', outName);
+    try {
+      const container = await readBytes(file, (loaded) => setStage(task, '读取中', loaded / Math.max(1, file.size)));
+      if (container.length < CONTAINER_OVERHEAD) {
+        throw new Error(
+          `不是 .${CIPHER_EXT} 容器：整份只有 ${container.length} 字节，连 ${CONTAINER_OVERHEAD} 字节的容器头与标签都不够`,
+        );
+      }
+      if (container[0] !== CONTAINER_VERSION) {
+        throw new Error(`不是 .${CIPHER_EXT} 容器：版本字节是 ${container[0]}，本内核只认 ${CONTAINER_VERSION}`);
+      }
+      setStage(task, '解密中');
+      await yieldToUi();
+      let plain: Uint8Array;
+      try {
+        plain = await decryptBytes(current, container);
+      } catch {
+        // 口令不对与容器被改过在 AES-GCM 下是同一种失败：不区分，也不写出半成品
+        throw new Error('解不开：口令与本空间不一致，或容器已被改动（GCM 校验未过，没有写出任何文件）');
+      }
+      saveToDisk(plain, outName, 'application/octet-stream');
+      finishTask(
+        task,
+        `已本地解密落盘（未经服务端）· 明文 ${formatBytes(plain.length)} = 容器 ${formatBytes(container.length)} − ${CONTAINER_OVERHEAD} 字节开销`,
+      );
+      ok += 1;
+    } catch (err) {
+      failTask(task, errorText(err));
+      ElMessage.error(errorText(err));
+    }
+  }
+  if (ok) ElMessage.success(`${ok} 个容器已解回原名并落盘`);
 }
 
 async function removeOne(row: VaultFileView): Promise<void> {
@@ -604,7 +862,7 @@ onBeforeUnmount(clearSecret);
               <el-button size="small" type="primary" :disabled="!unlocked" @click="openFilePicker">加密上传</el-button>
               <el-button size="small" :disabled="!unlocked" @click="rekey.open = true">修改口令</el-button>
               <el-button size="small" :disabled="!unlocked" @click="lock">锁定</el-button>
-              <el-button size="small" type="danger" plain :disabled="!unlocked" @click="destroySpace">销毁全部密文</el-button>
+              <el-button size="small" type="danger" plain :disabled="!unlocked || transferring" @click="destroySpace">销毁全部密文</el-button>
             </div>
           </div>
           <input ref="fileInput" class="pk-vault__input" type="file" multiple @change="onFilePick" />
@@ -615,9 +873,73 @@ onBeforeUnmount(clearSecret);
             @dragleave="dragOver = false"
             @drop.prevent="onDrop"
           >
-            把文件拖到这里：浏览器会先加密再提交，{{ progress || '密文与文件名一起出网' }}
+            把文件拖到这里：浏览器先加密再提交，文件名与字节一起出网，落盘后缀统一为
+            .{{ CIPHER_EXT }}{{ transferring ? ` · ${activeTasks.length} 个任务进行中` : '' }}
           </div>
-          <p v-if="busy && !progress" class="pk-muted pk-vault__tip">处理中…</p>
+          <p class="pk-muted pk-vault__tip">
+            「下载加密文件」拿到的是未解密的密文容器（例：<code>原名.pdf.{{ CIPHER_EXT }}</code>），
+            凭口令仍可再「解密下载」还原原名；容器恒比明文大 {{ CONTAINER_OVERHEAD }} 字节，配额按密文体积计。
+          </p>
+        </div>
+
+        <!-- 本地加解密（D30）：只碰内存里的密钥，不入库、不占配额。类名同样避开 __title/__actions/__input 等读数契约 -->
+        <div v-if="!viewingOther" class="pk-card pk-vault__tool">
+          <div class="pk-vault__toolhead">
+            <h4 class="pk-vault__tooltitle">本地加解密</h4>
+            <div class="pk-vault__toolbtns">
+              <el-button size="small" type="primary" plain @click="pickLocal('encrypt')">加密</el-button>
+              <el-button size="small" @click="pickLocal('decrypt')">解密</el-button>
+            </div>
+          </div>
+          <p class="pk-vault__toolnote">
+            这对按钮只在你的浏览器里做事：选本地文件 → 用本空间口令派生的那把密钥加/解 → 结果直接交给浏览器落盘，
+            <strong>不上传、不入库、不占配额</strong>，空间条目数一位不动。「加密」产出
+            <code>原名.原扩展名.{{ CIPHER_EXT }}</code>，与「下载加密文件」拿到的是同一种容器，两边可互相搬运；
+            「解密」吃的就是这种容器，落盘名去掉 <code>.{{ CIPHER_EXT }}</code> 还原原名
+            （容器里不存文件名，名字只能从后缀还原）。口令仍是那一个空间口令：锁定之后或换到别人的空间都解不开。
+          </p>
+          <input
+            ref="localEncryptInput"
+            class="pk-vault__tool-input"
+            type="file"
+            multiple
+            @change="onLocalPick($event, 'encrypt')"
+          />
+          <input
+            ref="localDecryptInput"
+            class="pk-vault__tool-input"
+            type="file"
+            multiple
+            @change="onLocalPick($event, 'decrypt')"
+          />
+        </div>
+
+        <!-- 传输队列：加密上传、两种下载与本地加解密共用一份进度（D29 / D30）。类名刻意避开 __title / __lede，见文件头注意 ⑤ -->
+        <div v-if="tasks.length" class="pk-card pk-vault__queue">
+          <div class="pk-vault__qhead">
+            <span class="pk-vault__qtitle">传输进度</span>
+            <span class="pk-muted">
+              {{ activeTasks.length }} 进行中 · {{ doneTasks.length }} 已结束 · 加密文件后缀 .{{ CIPHER_EXT }}
+            </span>
+            <el-button size="small" :disabled="!doneTasks.length" @click="clearDone">清除已结束</el-button>
+          </div>
+          <ul class="pk-vault__qtasks">
+            <li v-for="task in tasks" :key="task.key" class="pk-vault__qtask">
+              <div class="pk-vault__qname">
+                <strong>{{ task.label }}</strong>
+                <span class="pk-muted" :class="{ 'pk-vault__qfail': task.state === '失败' }">
+                  {{ task.state }} · {{ task.progress }}%
+                </span>
+              </div>
+              <el-progress
+                :percentage="task.progress"
+                :stroke-width="6"
+                :show-text="false"
+                :status="task.state === '失败' ? 'exception' : task.state === '已完成' ? 'success' : undefined"
+              />
+              <span v-if="task.detail" class="pk-muted pk-vault__qdetail">{{ task.detail }}</span>
+            </li>
+          </ul>
         </div>
 
         <div class="pk-vault__grid">
@@ -626,22 +948,48 @@ onBeforeUnmount(clearSecret);
               <span>{{ badgeOf(row) }}</span>
             </div>
             <div class="pk-vault__text">
-              <p class="pk-vault__name">{{ displayName(row) }}</p>
+              <div class="pk-vault__line">
+                <p class="pk-vault__name">{{ displayName(row) }}</p>
+                <span
+                  v-if="cipherNameOf(row)"
+                  class="pk-vault__tag"
+                  :title="`下载加密文件时保存为 ${cipherNameOf(row)}`"
+                >
+                  .{{ CIPHER_EXT }}
+                </span>
+              </div>
               <p class="pk-muted pk-vault__sub">
                 密文 {{ formatBytes(row.size) }} · 明文 {{ formatBytes(row.plainSize) }} · {{ formatDate(row.createTime) }}
               </p>
             </div>
             <div class="pk-vault__ops">
               <el-button
+                v-if="row.nameCipher"
+                size="small"
+                text
+                :disabled="!unlocked || !row.links.cipher"
+                :title="`保存未解密的密文容器，后缀 .${CIPHER_EXT}`"
+                @click="download(row, 'cipher')"
+              >
+                下载加密文件
+              </el-button>
+              <el-button
                 size="small"
                 text
                 :disabled="!unlocked || !row.links.cipher"
                 :title="row.links.cipher ? '本地解密后保存' : '他人空间的密文不下发'"
-                @click="download(row)"
+                @click="download(row, 'plain')"
               >
                 解密下载
               </el-button>
-              <el-button v-if="row.canDelete" size="small" text type="danger" :disabled="busy" @click="removeOne(row)">
+              <el-button
+                v-if="row.canDelete"
+                size="small"
+                text
+                type="danger"
+                :disabled="busy || transferring"
+                @click="removeOne(row)"
+              >
                 彻底删除
               </el-button>
             </div>
@@ -886,6 +1234,126 @@ onBeforeUnmount(clearSecret);
   border-color: var(--pk-brand);
   background: var(--pk-brand-soft);
   color: var(--pk-brand);
+}
+
+.pk-vault__tool {
+  padding: 14px 16px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.pk-vault__toolhead {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  flex-wrap: wrap;
+}
+
+.pk-vault__tooltitle {
+  margin: 0;
+  font-size: 14px;
+  font-weight: 700;
+}
+
+.pk-vault__toolbtns {
+  display: flex;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.pk-vault__toolnote {
+  margin: 0;
+  font-size: 12px;
+  line-height: 1.7;
+  color: var(--pk-muted);
+}
+
+.pk-vault__tool-input {
+  display: none;
+}
+
+.pk-vault__queue {
+  padding: 12px 16px 14px;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.pk-vault__qhead {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+  font-size: 12px;
+}
+
+.pk-vault__qtitle {
+  font-size: 14px;
+  font-weight: 700;
+}
+
+.pk-vault__qhead .el-button {
+  margin-left: auto;
+}
+
+.pk-vault__qtasks {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+
+.pk-vault__qtask {
+  padding: 9px 0;
+  border-top: 1px solid var(--pk-line);
+}
+
+.pk-vault__qname {
+  display: flex;
+  justify-content: space-between;
+  align-items: baseline;
+  gap: 10px;
+  font-size: 13px;
+  margin-bottom: 6px;
+}
+
+.pk-vault__qname strong {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.pk-vault__qdetail {
+  font-size: 12px;
+  display: block;
+  margin-top: 4px;
+  line-height: 1.6;
+}
+
+.pk-vault__qfail {
+  color: #d64545;
+}
+
+.pk-vault__line {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+}
+
+.pk-vault__line .pk-vault__name {
+  min-width: 0;
+}
+
+.pk-vault__tag {
+  flex: none;
+  font-size: 11px;
+  letter-spacing: 0.5px;
+  color: var(--pk-brand);
+  background: var(--pk-brand-soft);
+  border-radius: 6px;
+  padding: 1px 6px;
 }
 
 .pk-vault__grid {

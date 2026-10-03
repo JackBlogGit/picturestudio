@@ -2,6 +2,7 @@
 /**
  * 标签库（PRD 8.2 第 4 页 / 4.6）。列表按使用频次排序，冗余标签靠它清理；
  * 合并只允许同类型，跨类型会毁掉筛选语义，后端直接 409。
+ * D34：新建／改名／合并／删除每一项提交前都要再验证一次当前账号口令。
  */
 import { computed, onMounted, reactive, ref } from 'vue';
 import { ElMessage, ElMessageBox } from 'element-plus';
@@ -9,6 +10,7 @@ import { createTag, deleteTag, listTags, mergeTag, renameTag } from '@/api/admin
 import { errorText } from '@/api/client';
 import type { AdminTagRow, TagType } from '@/types/api';
 import { TAG_TYPE_LABEL } from '@/types/api';
+import { askReauth, endReauth } from '@/utils/reauth';
 
 const rows = ref<AdminTagRow[]>([]);
 const loading = ref(false);
@@ -18,6 +20,16 @@ const query = reactive({ type: '' as '' | TagType, keyword: '' });
 const form = reactive({ open: false, type: 'coser' as TagType, name: '' });
 
 const mergeState = reactive({ open: false, fromId: 0, toId: undefined as number | undefined });
+
+/** 弹窗每次都从默认值起步，「重置」就是回到这个起点 */
+function resetForm(): void {
+  form.type = 'coser';
+  form.name = '';
+}
+
+function resetMerge(): void {
+  mergeState.toId = undefined;
+}
 
 const TYPES = Object.keys(TAG_TYPE_LABEL) as TagType[];
 
@@ -39,6 +51,7 @@ async function load(): Promise<void> {
 }
 
 async function submitCreate(): Promise<void> {
+  if (!(await askReauth(`新建${TAG_TYPE_LABEL[form.type]}「${form.name || '未命名'}」`))) return;
   busy.value = true;
   try {
     await createTag({ type: form.type, name: form.name });
@@ -50,6 +63,7 @@ async function submitCreate(): Promise<void> {
     ElMessage.error(errorText(err));
   } finally {
     busy.value = false;
+    endReauth();
   }
 }
 
@@ -60,6 +74,7 @@ async function doRename(row: AdminTagRow): Promise<void> {
     cancelButtonText: '取消',
   }).catch(() => null);
   if (!input) return;
+  if (!(await askReauth(`把标签「${row.name}」改名`))) return;
   busy.value = true;
   try {
     await renameTag(row.id, input.value);
@@ -69,6 +84,7 @@ async function doRename(row: AdminTagRow): Promise<void> {
     ElMessage.error(errorText(err));
   } finally {
     busy.value = false;
+    endReauth();
   }
 }
 
@@ -84,6 +100,7 @@ async function submitMerge(): Promise<void> {
     return;
   }
   const from = rows.value.find((t) => t.id === mergeState.fromId);
+  if (!(await askReauth(`把「${from?.name}」合并到别的标签`))) return;
   busy.value = true;
   try {
     const result = await mergeTag(mergeState.fromId, mergeState.toId);
@@ -94,6 +111,7 @@ async function submitMerge(): Promise<void> {
     ElMessage.error(errorText(err));
   } finally {
     busy.value = false;
+    endReauth();
   }
 }
 
@@ -106,6 +124,7 @@ async function remove(row: AdminTagRow): Promise<void> {
     { type: 'warning', confirmButtonText: '确定删除', cancelButtonText: '取消' },
   ).catch(() => false);
   if (!confirmed) return;
+  if (!(await askReauth(`删除标签「${row.name}」`))) return;
   busy.value = true;
   try {
     const result = await deleteTag(row.id);
@@ -115,6 +134,7 @@ async function remove(row: AdminTagRow): Promise<void> {
     ElMessage.error(errorText(err));
   } finally {
     busy.value = false;
+    endReauth();
   }
 }
 
@@ -185,6 +205,7 @@ onMounted(load);
       </el-form>
       <template #footer>
         <el-button @click="form.open = false">取消</el-button>
+        <el-button @click="resetForm">重置</el-button>
         <el-button type="primary" :loading="busy" @click="submitCreate">创建</el-button>
       </template>
     </el-dialog>
@@ -213,6 +234,7 @@ onMounted(load);
       </el-form>
       <template #footer>
         <el-button @click="mergeState.open = false">取消</el-button>
+        <el-button @click="resetMerge">重置</el-button>
         <el-button type="primary" :loading="busy" @click="submitMerge">确定合并</el-button>
       </template>
     </el-dialog>

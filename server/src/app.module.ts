@@ -16,6 +16,7 @@ import { AuditModule } from './modules/audit/audit.module';
 import { AuthModule } from './modules/auth/auth.module';
 import { ImageModule } from './modules/image/image.module';
 import { SettingsModule } from './modules/settings/settings.module';
+import { ShareModule } from './modules/share/share.module';
 import { TagModule } from './modules/tag/tag.module';
 import { UploadModule } from './modules/upload/upload.module';
 import { TaskModule } from './modules/task/task.module';
@@ -70,6 +71,7 @@ const throttler = ThrottlerModule.forRoot({
     AlbumModule,
     ImageModule,
     UploadModule,
+    ShareModule,
     TaskModule,
     TempAccountModule,
     CrawlerModule,

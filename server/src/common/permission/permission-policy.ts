@@ -103,7 +103,7 @@ export const ADMIN_MATRIX: Record<AdminAction, UserLevel> = {
   [AdminAction.WriteSiteSettings]: UserLevel.SuperAdmin,
   [AdminAction.ReviewMessages]: UserLevel.Admin,
   [AdminAction.ShareLinkManagement]: UserLevel.Member,
-  // D23：爬虫只认 L4，与备份同列，不参与 D20 个人授权与 D21 能力位覆盖
+  // D28：爬虫只认 L4，与备份同列，不参与 D20 个人授权与 D21 能力位覆盖
   [AdminAction.CrawlerSearch]: UserLevel.SuperAdmin,
   [AdminAction.CrawlerManage]: UserLevel.SuperAdmin,
 };
@@ -182,16 +182,20 @@ function decideTemp(actor: TempActor, action: Action, resource: ResourceRef): De
     return deny(404, 'NOT_IN_WHITELIST', '该资源不在临时账号授权范围内');
   }
 
+  // D27：上传按身份硬拦——临时账号是取图方，相册与网盘都不给写档（两开关已随本轮作废）
+  if (action === Action.Upload) {
+    return deny(403, 'TEMP_UPLOAD_FORBIDDEN', '临时账号只能取图，不能上传照片或文件');
+  }
+
   const forbidden =
     action === Action.EditMeta ||
     action === Action.Delete ||
     action === Action.ChangeVisibility ||
     action === Action.CreateShareLink;
   if (forbidden) {
-    return deny(403, 'TEMP_FORBIDDEN', '临时账号仅可预览、下载、上传与编辑本人上传资源的标签');
+    return deny(403, 'TEMP_FORBIDDEN', '临时账号仅可预览、下载与编辑本人上传资源的标签');
   }
 
-  const isDrive = resource.type === ResourceType.Folder || resource.type === ResourceType.File;
   const switchOn = (() => {
     switch (action) {
       case Action.Preview:
@@ -199,8 +203,6 @@ function decideTemp(actor: TempActor, action: Action, resource: ResourceRef): De
       case Action.DownloadOriginal:
       case Action.ZipDownload:
         return actor.flags.download;
-      case Action.Upload:
-        return isDrive ? actor.flags.uploadFile : actor.flags.uploadImg;
       case Action.EditTags:
         return actor.flags.editTag;
       default:
@@ -213,9 +215,6 @@ function decideTemp(actor: TempActor, action: Action, resource: ResourceRef): De
   }
   if (action === Action.EditTags && resource.uploadTempId !== actor.tempId) {
     return deny(403, 'TEMP_NOT_SELF_UPLOAD', '只能编辑本人本次上传资源的标签');
-  }
-  if (action === Action.Upload && actor.quotaBytes > 0 && actor.usedBytes >= actor.quotaBytes) {
-    return deny(413, 'QUOTA_EXCEEDED', '临时账号存储空间已用尽');
   }
   return allow();
 }
@@ -295,9 +294,29 @@ export interface Capabilities {
   writeSiteSettings: boolean;
 }
 
-export function capabilitiesFor(level: UserLevel): Capabilities {
+/** 能力位键名与顺序和 client/src/types/api.ts 的 CAP_KEYS 一致（PRD 6.4 表序） */
+export type CapKey = keyof Capabilities;
+
+export const CAP_KEYS: CapKey[] = [
+  'download',
+  'zip',
+  'upload',
+  'editOwn',
+  'editAny',
+  'delete',
+  'changeVisibility',
+  'canSetPublic',
+  'shareLink',
+  'adminConsole',
+  'writeSiteSettings',
+];
+
+/** users.feature_grants 的落库形状：{"download":1,"editAny":0}，1 强制开 / 0 强制关，缺键跟随等级 */
+export type FeatureGrants = Record<string, number>;
+
+export function capabilitiesFor(level: UserLevel, grants?: FeatureGrants | null): Capabilities {
   const scope = (action: Action) => RESOURCE_MATRIX[action][level];
-  return {
+  const base: Capabilities = {
     download: scope(Action.DownloadOriginal) !== 'none',
     zip: scope(Action.ZipDownload) !== 'none',
     upload: scope(Action.Upload) !== 'none',
@@ -310,6 +329,23 @@ export function capabilitiesFor(level: UserLevel): Capabilities {
     adminConsole: level >= UserLevel.Admin,
     writeSiteSettings: level >= UserLevel.SuperAdmin,
   };
+  if (!grants) return base;
+  /**
+   * D21 只改「这一位显不显示」，不改能不能读到资源：
+   * 真正的放行仍走 decide()，那里逐条查档位可见性与归属，所以强制开也越不过档。
+   */
+  const merged: Capabilities = { ...base };
+  for (const key of CAP_KEYS) {
+    if (key in grants) merged[key] = Boolean(grants[key]);
+  }
+  return merged;
+}
+
+/** 被按人覆盖改掉的那几位，供 /auth/me 回显「这不是等级自带的」（PRD 6.4 / D21） */
+export function overriddenCaps(level: UserLevel, grants?: FeatureGrants | null): CapKey[] {
+  if (!grants) return [];
+  const base = capabilitiesFor(level);
+  return CAP_KEYS.filter((key) => key in grants && base[key] !== Boolean(grants[key]));
 }
 
 /** manage_members 的上下级约束：L3 只能操作 L1/L2，L4 不可被任何人操作（含 L4） */

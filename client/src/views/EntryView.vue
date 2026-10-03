@@ -61,7 +61,7 @@ const visible = computed(() => doors.value.filter((door) => !door.hidden));
       </button>
     </div>
 
-    <p v-if="!visible.length" class="pk-muted pk-entry__lead">当前身份没有可用的入口，请从相册页浏览公开内容或登录。</p>
+    <p v-if="!visible.length" class="pk-muted pk-entry__lead">当前身份没有可用的入口——临时账号请在首页宫格用「取图」取自己的返图。</p>
   </section>
 </template>
 

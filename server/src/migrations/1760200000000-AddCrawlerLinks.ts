@@ -1,7 +1,7 @@
 import { MigrationInterface, QueryRunner } from 'typeorm';
 
 /**
- * PRD D23 爬虫模块的升级路径（2026-10-02）。
+ * PRD 10.8 / D28 爬虫模块的升级路径（2026-10-02）。
  *
  * 全新部署不需要它：schema.sql 已含 crawler_links 表与 logs.target_type 的 'crawler' 值。
  * 已部署的库靠本迁移补建，两步都做存在性判断，重复执行是安全的空转。

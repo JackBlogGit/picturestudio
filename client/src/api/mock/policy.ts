@@ -253,13 +253,14 @@ function decideTemp(actor: Extract<Actor, { kind: 'temp' }>, action: ActionName,
   if (target === undefined || !actor.albumIds.includes(target)) {
     return deny(404, 'NOT_IN_WHITELIST', '该资源不在临时账号授权范围内');
   }
-  // 临时账号无权查看非 public 档（member / admin / private），一律 404 避免泄露存在性
-  if (effectiveVisibility(ref) !== 'public') {
-    return deny(404, 'NOT_FOUND', '资源不存在或无权查看');
-  }
+  // 白名单即授权，可覆盖档位（PRD 6.2）：这里不再复查 visibility，与 server 的 decideTemp 同口径
   // 其余册内开关对临时账号同样生效：白名单给的是「能进这本册」，不是里面每扇门都开
   const closed = albumCapsGate(action, ref);
   if (closed) return closed;
+  // D27：拍展传图入口收回到正式成员——临时账号是只读的取图方，「传图」不再由开关授予
+  if (action === Action.Upload) {
+    return deny(403, 'TEMP_UPLOAD_FORBIDDEN', '临时账号只能取图，不能上传照片或文件');
+  }
   const forbidden: ActionName[] = [
     Action.EditMeta,
     Action.Delete,
@@ -267,7 +268,7 @@ function decideTemp(actor: Extract<Actor, { kind: 'temp' }>, action: ActionName,
     Action.CreateShareLink,
   ];
   if (forbidden.includes(action)) {
-    return deny(403, 'TEMP_FORBIDDEN', '临时账号仅可预览、下载、上传与编辑本人上传资源的标签');
+    return deny(403, 'TEMP_FORBIDDEN', '临时账号仅可预览、下载与编辑本人上传资源的标签');
   }
   const switchOn = (() => {
     switch (action) {
@@ -276,8 +277,6 @@ function decideTemp(actor: Extract<Actor, { kind: 'temp' }>, action: ActionName,
       case Action.DownloadOriginal:
       case Action.ZipDownload:
         return actor.flags.download;
-      case Action.Upload:
-        return actor.flags.uploadImg;
       case Action.EditTags:
         return actor.flags.editTag;
       default:
@@ -504,11 +503,10 @@ export function folderGatePerms(actor: Actor, folder: FolderRef, ctx: FolderPerm
 
   if (actor.kind === 'temp') {
     if (!ctx.tempWhitelisted) return NO_ACCESS;
-    // 白名单命中后仍只按开关给读／下／传，改不了别人的目录结构
+    // 白名单命中后只按开关给读／下，D27 起写档一律不给：传文件由身份决定，不看开关
     return grant({
       read: actor.flags.preview,
       download: actor.flags.download,
-      upload: actor.flags.uploadFile,
     });
   }
 

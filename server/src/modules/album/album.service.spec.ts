@@ -20,7 +20,7 @@ const tempWith = (albumIds: number[]): Actor => ({
   ownerUid: 100,
   expired: false,
   disabled: false,
-  flags: { preview: true, download: true, uploadImg: true, uploadFile: false, editTag: true },
+  flags: { preview: true, download: true, editTag: true },
   quotaBytes: 0,
   usedBytes: 0,
   albumIds,
@@ -184,7 +184,7 @@ describe('相册列表的身份裁剪', () => {
   it('关键词里的 % 必须转义，否则能全表扫', async () => {
     const f = build(null);
     await f.service.list(member(UserLevel.Member), { keyword: '20%展' } as never);
-    expect(f.albumQb.params.kw).toBe('%20\\%展%');
+    expect(f.albumQb.params.kw).toBe('%20!%展%');
   });
 });
 

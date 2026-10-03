@@ -6,6 +6,7 @@
  */
 import { spawn } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
+import { makeReauth } from './lib-reauth.mjs';
 
 const EDGE = 'C:/Program Files (x86)/Microsoft/Edge/Application/msedge.exe';
 const OUT = fileURLToPath(new URL('./', import.meta.url));
@@ -94,6 +95,9 @@ async function evalJs(expression) {
   }
   return res.result.value;
 }
+
+/** D34：保存授权前会先弹一次身份再验证 */
+const reauth = makeReauth({ evalJs, sleep });
 
 async function goto(token, path) {
   await call('Page.addScriptToEvaluateOnNewDocument', {
@@ -198,6 +202,8 @@ await shot('grant-02-dialog.png');
 await click('.pk-admin__grant .el-switch', '', { index: 0 });
 await click('.pk-admin__grant .el-switch', '', { index: 2 });
 await click('.el-dialog__footer button', '保存授权');
+console.log('  口令弹窗:', await reauth.pass());
+await sleep(900);
 console.log('[保存后]', await evalJs(MEMBERS));
 await shot('grant-03-granted.png');
 

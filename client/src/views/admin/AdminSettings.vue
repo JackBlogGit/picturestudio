@@ -2,6 +2,7 @@
 /**
  * 站点设置（PRD 8.2 第 9 页 / 6.1）。L3 只读、仅 L4 可写；类型校验放在服务端，
  * 页面不重复实现规则，只收集脏值整体提交，把 400 的原样回执显示出来。
+ * D34：这一页的保存属于后台改动，提交前要先过身份再验证。
  */
 import { computed, onMounted, ref, watch } from 'vue';
 import { ElMessage } from 'element-plus';
@@ -10,6 +11,7 @@ import { errorText } from '@/api/client';
 import type { AdminSettingRow, ContactChannel } from '@/types/api';
 import { CONTACT_TYPES, parseContactChannels } from '@/utils/contact';
 import { formatBytes } from '@/utils/format';
+import { askReauth, endReauth } from '@/utils/reauth';
 import { useSessionStore } from '@/stores/session';
 
 const session = useSessionStore();
@@ -139,6 +141,7 @@ async function load(): Promise<void> {
 
 async function save(): Promise<void> {
   if (!dirtyKeys.value.length) return;
+  if (!(await askReauth(`保存站点设置（${dirtyKeys.value.length} 项改动）`))) return;
   busy.value = true;
   try {
     const settings: Record<string, string> = {};
@@ -151,6 +154,7 @@ async function save(): Promise<void> {
     ElMessage.error(errorText(err));
   } finally {
     busy.value = false;
+    endReauth();
   }
 }
 
@@ -169,7 +173,7 @@ onMounted(load);
       </div>
       <div class="pk-admin__inline">
         <el-button size="small" :disabled="loading" @click="load">重新读取</el-button>
-        <el-button size="small" :disabled="!dirtyKeys.length" @click="resetDraft">放弃修改</el-button>
+        <el-button size="small" :disabled="!dirtyKeys.length" @click="resetDraft">重置</el-button>
         <el-button
           size="small"
           type="primary"
@@ -192,7 +196,7 @@ onMounted(load);
       description="PRD 6.1：核心配置只有超级管理员能改，普通管理员可以查看。想改请用演示身份切到 L4。"
     />
     <p v-else-if="dirtyKeys.length" class="pk-muted pk-admin__dirty">
-      已改动 {{ dirtyKeys.length }} 项，未保存前不影响线上行为。
+      已改动 {{ dirtyKeys.length }} 项，未保存前不影响线上行为；点「保存」要先填当前账号的登录口令（PRD 6.1 / D34）。
     </p>
 
     <article v-for="bucket in groups" :key="bucket.group" class="pk-card pk-admin__card">
@@ -257,10 +261,25 @@ onMounted(load);
       </div>
     </article>
 
+    <div class="pk-admin__inline pk-setting__foot">
+      <el-button size="small" :disabled="!dirtyKeys.length" @click="resetDraft">重置</el-button>
+      <el-button
+        size="small"
+        type="primary"
+        :disabled="!canWrite || !dirtyKeys.length"
+        :loading="busy"
+        @click="save"
+      >
+        保存 {{ dirtyKeys.length ? `(${dirtyKeys.length})` : '' }}
+      </el-button>
+      <span class="pk-muted">与页头是同一组动作：配置项多，滚到底也能直接重置与保存。</span>
+    </div>
+
     <p class="pk-muted pk-admin__note">
       上传与配额这一族键后端每次读取、改完不需要重启，mock 也按同一套规则在建会话那一关挡类型、超限与超配额；
       水印只影响之后生成的预览，已入库的派生图不会重跑。
       站点简介这一族键 schema.sql 里还没有，落库时要补默认值（PRD 12.9 配置走环境变量，不写死在代码里）。
+      D34：后台的每一项改动都要先验证当前账号的登录口令，口令错了后端回 401，改动不会落库。
     </p>
   </section>
 </template>
@@ -326,6 +345,10 @@ onMounted(load);
   gap: 10px;
   align-items: center;
   font-size: 12px;
+}
+
+.pk-setting__foot {
+  margin: 14px 0 4px;
 }
 
 .pk-admin__note {

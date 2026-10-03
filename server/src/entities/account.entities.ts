@@ -29,6 +29,10 @@ export class User {
   @Column({ length: 50, default: '' })
   nickname: string;
 
+  /** 8.5 顶栏欢迎语「你好！{名称} · {职务}」，缺失时前端退化成只显示名称 */
+  @Column({ length: 50, default: '' })
+  position: string;
+
   @Column({ type: 'tinyint' })
   level: UserLevel;
 
@@ -44,6 +48,26 @@ export class User {
 
   @Column({ length: 255, default: '' })
   remark: string;
+
+  /**
+   * D20 个人文件权限授权：四档各自 1=开。判定是 `level >= 全站门槛 ∨ 本列 = 1` 取并集，
+   * 门槛填 5 时也能只对一个人敞开；只有 L4 能写，撤销不回收已建的目录。
+   */
+  @Column({ type: 'tinyint', default: 0 })
+  drivePerm1: number;
+
+  @Column({ type: 'tinyint', default: 0 })
+  drivePerm2: number;
+
+  @Column({ type: 'tinyint', default: 0 })
+  drivePerm3: number;
+
+  @Column({ type: 'tinyint', default: 0 })
+  drivePerm4: number;
+
+  /** D21 按人的能力位覆盖：{"download":1,"editAny":0}，1 强制开 / 0 强制关，缺键=跟随等级，NULL=全部跟随 */
+  @Column({ type: 'json', nullable: true })
+  featureGrants: Record<string, number> | null;
 
   @Column({ type: 'datetime', nullable: true })
   lastLoginTime: Date | null;
@@ -98,12 +122,6 @@ export class TempAccount {
 
   @Column({ type: 'tinyint', default: 0 })
   allowDownload: number;
-
-  @Column({ type: 'tinyint', default: 0 })
-  allowUploadImg: number;
-
-  @Column({ type: 'tinyint', default: 0 })
-  allowUploadFile: number;
 
   @Column({ type: 'tinyint', default: 0 })
   allowEditTag: number;

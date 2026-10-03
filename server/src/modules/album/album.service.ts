@@ -9,6 +9,7 @@ import { Actor, ActorKind } from '../../common/permission/types';
 import { rank, Visibility } from '../../common/enums/visibility.enum';
 import { UserLevel } from '../../common/enums/user-level.enum';
 import { StorageService } from '../../common/storage/storage.service';
+import { LIKE_ESCAPE_SQL, likePattern } from '../../common/sql/like';
 import { Album, AlbumStatus, Image, LogTargetType } from '../../entities';
 import { AuditService, RequestContext } from '../audit/audit.service';
 import { CreateAlbumDto, ListAlbumDto, UpdateAlbumDto } from './dto/album.dto';
@@ -24,10 +25,6 @@ const ALL_VISIBILITIES: Visibility[] = [
 export function visibleVisibilities(level: UserLevel): Visibility[] {
   const max = VISIBLE_MAX_RANK[level];
   return ALL_VISIBILITIES.filter((v) => rank(v) <= max);
-}
-
-function likeEscaped(keyword: string): string {
-  return `%${keyword.replace(/[\\%_]/g, (c) => `\\${c}`)}%`;
 }
 
 @Injectable()
@@ -81,7 +78,10 @@ export class AlbumService {
     if (query.status) qb.andWhere('a.status = :status', { status: query.status });
     const kw = query.keyword?.trim();
     if (kw) {
-      qb.andWhere("(a.name LIKE :kw ESCAPE '\\\\' OR a.eventName LIKE :kw ESCAPE '\\\\')", { kw: likeEscaped(kw) });
+      qb.andWhere(
+        `(a.name LIKE :kw ${LIKE_ESCAPE_SQL} OR a.eventName LIKE :kw ${LIKE_ESCAPE_SQL})`,
+        { kw: likePattern(kw) },
+      );
     }
 
     const [list, total] = await qb.getManyAndCount();

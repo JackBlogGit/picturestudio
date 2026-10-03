@@ -10,7 +10,11 @@ const session = useSessionStore();
 const now = ref(session.serverNow());
 let timer: number | undefined;
 
-const rest = computed(() => Math.max(0, Date.parse(props.expiresAt) - now.value));
+/** 解析不出到期时刻时按已到期处理，否则横幅会渲染成「剩余 NaN 天 NaN:NaN:NaN」 */
+const rest = computed(() => {
+  const end = Date.parse(props.expiresAt);
+  return Number.isFinite(end) ? Math.max(0, end - now.value) : 0;
+});
 const days = computed(() => Math.floor(rest.value / 86_400_000));
 const expired = computed(() => rest.value <= 0);
 const urgent = computed(() => !expired.value && days.value <= 1);

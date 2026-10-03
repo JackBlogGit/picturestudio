@@ -8,6 +8,7 @@
 import { spawn } from 'node:child_process';
 import { writeFile } from 'node:fs/promises';
 import { fileURLToPath } from 'node:url';
+import { makeReauth } from './lib-reauth.mjs';
 
 const EDGE = 'C:/Program Files (x86)/Microsoft/Edge/Application/msedge.exe';
 const OUT = fileURLToPath(new URL('./', import.meta.url));
@@ -103,6 +104,9 @@ async function evalJs(expression) {
   }
   return res.result.value;
 }
+
+/** D34：这一页的「保存开关」现在会先要一次登录口令 */
+const reauth = makeReauth({ evalJs, sleep });
 
 /** 页面里的探针一律返回 JSON 字符串，Node 侧再 parse */
 async function probe(expression) {
@@ -243,9 +247,11 @@ async function toggleSwitches(indices) {
 async function saveCaps() {
   const before = (await probe(WHO)).toasts;
   await click('.el-dialog__footer button', '保存开关');
+  const gate = await reauth.pass();
+  if (gate === 'no-prompt') console.log('  !! D34 口令弹窗没出现');
   await sleep(600);
   const all = JSON.parse(await evalJs('JSON.stringify(window.__toasts ?? [])'));
-  return all.slice(before);
+  return [`口令闸门=${gate}`, ...all.slice(before)];
 }
 
 async function apiProbe(body) {

@@ -55,8 +55,6 @@ function tempRow(over: Partial<TempAccount> = {}): TempAccount {
     disabled: 0,
     allowPreview: 1,
     allowDownload: 0,
-    allowUploadImg: 1,
-    allowUploadFile: 0,
     allowEditTag: 0,
     spaceQuota: '5368709120',
     usedSpace: '1048576',
@@ -162,7 +160,7 @@ describe('ActorGuard：身份识别顺序（PRD 7.1）', () => {
     }
   });
 
-  it('临时账号：五项开关、白名单与配额全部按库内值映射', async () => {
+  it('临时账号：三项开关、白名单与配额全部按库内值映射', async () => {
     const { guard, tokens } = build({ temp: tempRow() });
     const { ctx, req } = contextFor(await tokens.signTemp(7));
     await guard.canActivate(ctx);
@@ -173,8 +171,6 @@ describe('ActorGuard：身份识别顺序（PRD 7.1）', () => {
     expect(actor.flags).toEqual({
       preview: true,
       download: false,
-      uploadImg: true,
-      uploadFile: false,
       editTag: false,
     });
     expect(actor.albumIds).toEqual([10, 11]);

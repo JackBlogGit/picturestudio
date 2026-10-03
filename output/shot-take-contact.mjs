@@ -4,6 +4,7 @@
  */
 import { spawn } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
+import { makeReauth } from './lib-reauth.mjs';
 
 const EDGE = 'C:/Program Files (x86)/Microsoft/Edge/Application/msedge.exe';
 const OUT = fileURLToPath(new URL('./', import.meta.url));
@@ -93,6 +94,9 @@ async function evalJs(expression, awaitPromise = false) {
   }
   return res.result.value;
 }
+
+/** D34：站点设置的保存前会先弹一次身份再验证 */
+const reauth = makeReauth({ evalJs, sleep });
 
 async function goto(url) {
   const done = new Promise((r) => setTimeout(r, 1700));
@@ -315,6 +319,7 @@ log(
 })`),
 );
 await evalJs(`[...document.querySelectorAll('.pk-admin__inline button')].find((b) => b.innerText.includes('保存')).click()`);
+log('D34 口令弹窗', await reauth.pass());
 await sleep(1600);
 log('L4 save toast', await toast());
 await shot('admin-contact-saved.png');

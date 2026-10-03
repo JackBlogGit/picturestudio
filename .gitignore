@@ -10,6 +10,7 @@ coverage/
 
 # 上传文件与派生图存储，绝不入库
 /data/
+storage/
 server/tmp/
 
 # 本机 SQLite 开发库（synchronize 自动生成，不是数据源）

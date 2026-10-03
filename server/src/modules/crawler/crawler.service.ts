@@ -1,8 +1,9 @@
 import { Inject, Injectable, Logger } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
-import { FindOptionsWhere, In, Like, Repository } from 'typeorm';
+import { In, Repository } from 'typeorm';
 import { AppError } from '../../common/http/app-error';
 import { clampPaging, Page, pagedList } from '../../common/http/pagination';
+import { LIKE_ESCAPE_SQL, likePattern } from '../../common/sql/like';
 import { Actor, ActorKind } from '../../common/permission/types';
 import { UserLevel } from '../../common/enums/user-level.enum';
 import {
@@ -149,27 +150,20 @@ export class CrawlerService {
 
   async list(query: ListCrawlerLinkDto): Promise<Page<CrawlerLinkView>> {
     const { skip, take, page, pageSize } = clampPaging(query);
-    const base: FindOptionsWhere<CrawlerLink> = {};
-    if (query.status !== undefined) base.status = query.status;
-    if (query.platform) base.platform = query.platform;
+    const qb = this.repo.createQueryBuilder('c');
+    if (query.status !== undefined) qb.andWhere('c.status = :status', { status: query.status });
+    if (query.platform) qb.andWhere('c.platform = :platform', { platform: query.platform });
 
     // 命中三列即可：标题、正文摘要常在登记时同填，URL 用来回答「这条链接搜出来了没」
-    let where: FindOptionsWhere<CrawlerLink> | FindOptionsWhere<CrawlerLink>[] = base;
-    if (query.q) {
-      const pattern = `%${escapeLike(query.q)}%`;
-      where = [
-        { ...base, title: Like(pattern) },
-        { ...base, url: Like(pattern) },
-        { ...base, domain: Like(pattern) },
-      ];
+    const kw = query.q?.trim();
+    if (kw) {
+      qb.andWhere(
+        `(c.title LIKE :kw ${LIKE_ESCAPE_SQL} OR c.url LIKE :kw ${LIKE_ESCAPE_SQL} OR c.domain LIKE :kw ${LIKE_ESCAPE_SQL})`,
+        { kw: likePattern(kw) },
+      );
     }
 
-    const [rows, total] = await this.repo.findAndCount({
-      where,
-      order: { createTime: 'DESC' },
-      skip,
-      take,
-    });
+    const [rows, total] = await qb.orderBy('c.createTime', 'DESC').skip(skip).take(take).getManyAndCount();
     return pagedList(rows.map(toView), total, page, pageSize);
   }
 
@@ -257,11 +251,6 @@ export class CrawlerService {
     }
     return actor.uid;
   }
-}
-
-/** LIKE 的通配符必须转义，否则检索词里的 % 和 _ 会变成通配 */
-function escapeLike(value: string): string {
-  return value.replace(/[\\%_]/g, (ch) => `\\${ch}`);
 }
 
 function toView(row: CrawlerLink): CrawlerLinkView {

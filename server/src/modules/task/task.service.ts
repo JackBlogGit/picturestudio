@@ -16,6 +16,7 @@ import {
   decideTaskStage,
 } from '../../common/permission/task-policy';
 import { maskPhone } from '../../common/temp-account/phone-mask';
+import { LIKE_ESCAPE_SQL, likePrefixPattern } from '../../common/sql/like';
 import { LogTargetType, TempAccount, User } from '../../entities';
 import { AuditService, RequestContext } from '../audit/audit.service';
 import { ListTaskDto, TASK_SORT_COLUMNS, UpdateTaskStageDto } from './dto/task.dto';
@@ -67,11 +68,6 @@ function stageConditionSql(filter: TaskStageFilter): string {
   return parts.length ? parts.join(' AND ') : '1 = 1';
 }
 
-/** LIKE 前缀匹配：通配符必须转义，否则用户输入 % 就变成全表扫 */
-function prefixParam(keyword: string): string {
-  return `${keyword.replace(/[\\%_]/g, (c) => `\\${c}`)}%`;
-}
-
 @Injectable()
 export class TaskService {
   constructor(
@@ -89,8 +85,8 @@ export class TaskService {
     const kw = query.q?.trim();
     if (kw && kw.length >= MIN_SEARCH_LENGTH) {
       qb.andWhere(
-        "(t.accountNo LIKE :kw ESCAPE '\\\\' OR t.loginName LIKE :kw ESCAPE '\\\\' OR t.displayName LIKE :kw ESCAPE '\\\\')",
-        { kw: prefixParam(kw) },
+        `(t.accountNo LIKE :kw ${LIKE_ESCAPE_SQL} OR t.loginName LIKE :kw ${LIKE_ESCAPE_SQL} OR t.displayName LIKE :kw ${LIKE_ESCAPE_SQL})`,
+        { kw: likePrefixPattern(kw) },
       );
     }
 

@@ -127,9 +127,9 @@ export const deleteAlbum = (id: number) => api.delete<{ id: number; removedImage
 /** 2 已归档 / 3 已锁定 / 1 恢复正常 */
 export const setAlbumStatus = (id: number, status: number) => api.patch<AlbumRowView>(`/albums/${id}/status`, { status });
 
-/** D25：超管逐册关掉功能，传的是「已关闭」的键集，整份替换所以走 PUT（PRD 6.5 / 10.5） */
-export const updateAlbumCaps = (id: number, caps: AlbumCapKey[]) =>
-  api.put<AlbumRowView>(`/admin/albums/${id}/caps`, { caps });
+/** D25：超管逐册关掉功能，传的是「已关闭」的键集，整份替换所以走 PUT（PRD 6.5 / 10.5，键名一律 capsOff） */
+export const updateAlbumCaps = (id: number, capsOff: AlbumCapKey[]) =>
+  api.put<AlbumRowView>(`/admin/albums/${id}/caps`, { capsOff });
 
 // ---------------- 日志审计 ----------------
 

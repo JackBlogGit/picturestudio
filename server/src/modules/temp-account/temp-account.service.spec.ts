@@ -25,7 +25,7 @@ const tempActor: Actor = {
   ownerUid: SELF,
   expired: false,
   disabled: false,
-  flags: { preview: true, download: false, uploadImg: true, uploadFile: false, editTag: false },
+  flags: { preview: true, download: false, editTag: false },
   quotaBytes: 0,
   usedBytes: 0,
   albumIds: [],
@@ -43,8 +43,6 @@ function tempRow(over: Partial<TempAccount> = {}): TempAccount {
     expireTime: new Date(Date.now() + 7 * DAY_MS),
     allowPreview: 1,
     allowDownload: 0,
-    allowUploadImg: 1,
-    allowUploadFile: 0,
     allowEditTag: 0,
     spaceQuota: String(DEFAULT_QUOTA),
     usedSpace: '0',
@@ -191,40 +189,32 @@ function dto(over: Partial<CreateTempAccountDto> = {}): CreateTempAccountDto {
 const CAPS = { maxDaysForL1L2: 7, defaultQuota: DEFAULT_QUOTA };
 
 describe('D9 降权表（PRD 6.2 / 15 章用例 21）', () => {
-  it('L1 用 L3 的入参创建：三项开关强制归零、配额取站点默认、时长上限 7 天，并逐项登记覆盖', () => {
+  it('L1 用 L3 的入参创建：非预览开关强制归零、配额取站点默认、时长上限 7 天，并逐项登记覆盖', () => {
     const out = applyCreateLimits(
       UserLevel.Trainee,
       {
         allowPreview: 1,
         allowDownload: 1,
-        allowUploadImg: 1,
-        allowUploadFile: 1,
         allowEditTag: 1,
         spaceQuota: 999 * 1024 ** 3,
       },
       CAPS,
     );
-    expect(out.flags).toEqual({
-      allowPreview: 1,
-      allowDownload: 0,
-      allowUploadImg: 1,
-      allowUploadFile: 0,
-      allowEditTag: 0,
-    });
+    expect(out.flags).toEqual({ allowPreview: 1, allowDownload: 0, allowEditTag: 0 });
     expect(out.spaceQuota).toBe(DEFAULT_QUOTA);
     expect(out.maxDays).toBe(7);
-    expect(out.overridden).toEqual(expect.arrayContaining(['allowDownload', 'allowUploadFile', 'allowEditTag', 'spaceQuota']));
+    expect(out.overridden).toEqual(expect.arrayContaining(['allowDownload', 'allowEditTag', 'spaceQuota']));
   });
 
-  it('L1/L2 未声明开关时默认只开预览与传图', () => {
+  it('L1/L2 未声明开关时默认只开预览（D27：上传已不按开关授予，低等级可给的就剩预览）', () => {
     const out = applyCreateLimits(UserLevel.Member, {}, CAPS);
     expect(out.flags.allowPreview).toBe(1);
-    expect(out.flags.allowUploadImg).toBe(1);
     expect(out.flags.allowDownload).toBe(0);
+    expect(out.flags.allowEditTag).toBe(0);
     expect(out.overridden).toEqual([]);
   });
 
-  it('L3/L4 五项自由组合、配额自定义，默认全关', () => {
+  it('L3/L4 三项自由组合、配额自定义，默认全关', () => {
     const out = applyCreateLimits(
       UserLevel.Admin,
       { allowDownload: 1, allowEditTag: 1, spaceQuota: 1024 },

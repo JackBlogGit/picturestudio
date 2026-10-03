@@ -7,12 +7,14 @@
 import { ApiError } from './error';
 import { API_BASE, api, USE_MOCK } from './client';
 import { getAccessToken } from './token';
-import type { ImageView } from '@/types/api';
+import type { AlbumStage, ImageView } from '@/types/api';
 
 export interface UploadSessionView {
   uploadId: string;
   albumId: number;
   filename: string;
+  /** 本批图片的阶段（D31）；null = 上传时没选，由所属相册的阶段兜住 */
+  stage: AlbumStage | null;
   size: number;
   chunkSize: number;
   totalChunks: number;
@@ -31,8 +33,15 @@ export function createSession(
   albumId: number,
   file: { name: string; size: number },
   tempId?: number,
+  stage?: AlbumStage | null,
 ): Promise<UploadSessionView> {
-  return api.post<UploadSessionView>('/uploads', { albumId, filename: file.name, fileSize: file.size, tempId });
+  return api.post<UploadSessionView>('/uploads', {
+    albumId,
+    filename: file.name,
+    fileSize: file.size,
+    tempId,
+    stage,
+  });
 }
 
 export async function putChunk(uploadId: string, index: number, bytes: Blob): Promise<ChunkAck> {
